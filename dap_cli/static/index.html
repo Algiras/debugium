@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Debugium</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/codemirror.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/theme/darcula.min.css">
+</head>
+
+<body>
+    <div id="app">
+        <header>
+            <div class="header-left">
+                <h1>Debugium <span class="badge">Live</span></h1>
+            </div>
+            <div class="header-controls">
+                <button class="debug-btn btn-continue" onclick="sendCommand('continue')" title="Continue (F5)"><span
+                        class="btn-icon">▶</span> Continue</button>
+                <button class="debug-btn btn-step" onclick="sendCommand('stepIn')" title="Step In (F11)"><span
+                        class="btn-icon">↓</span> Step In</button>
+                <button class="debug-btn btn-over" onclick="sendCommand('next')" title="Step Over (F10)"><span
+                        class="btn-icon">↷</span> Step Over</button>
+                <button class="debug-btn" onclick="sendCommand('stepOut')" title="Step Out (Shift+F11)"><span
+                        class="btn-icon">↑</span> Step Out</button>
+                <button class="debug-btn" onclick="sendCommand('threads')" title="Refresh">⟳</button>
+            </div>
+        </header>
+
+        <div class="dashboard-wrapper">
+            <!-- Left Sidebar: Sessions -->
+            <aside class="sidebar sidebar-left">
+                <div class="panel">
+                    <div class="panel-header">
+                        <h2>Sessions</h2>
+                    </div>
+                    <div class="panel-content scrollable">
+                        <ul id="sessions-list" class="list-view">
+                            <li class="empty-state">Waiting for session...</li>
+                        </ul>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Center: Source Editor + Console -->
+            <main class="center-content">
+                <div class="panel source-panel">
+                    <div class="panel-header">
+                        <h2>Source</h2>
+                        <span id="current-file" class="file-path">No file mapped</span>
+                    </div>
+                    <div class="panel-content" id="code-view-container"></div>
+                </div>
+
+                <div class="panel console-panel">
+                    <div class="panel-header">
+                        <h2>Debug Console</h2>
+                    </div>
+                    <div class="panel-content scrollable" id="console-logs"></div>
+                </div>
+            </main>
+
+            <!-- Right Sidebar: Threads + Variables -->
+            <aside class="sidebar sidebar-right">
+                <div class="panel">
+                    <div class="panel-header">
+                        <h2>Threads &amp; Stack</h2>
+                    </div>
+                    <div class="panel-content scrollable">
+                        <ul id="threads-list" class="list-view">
+                            <li class="empty-state">No active threads</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="panel-header">
+                        <h2>Variables</h2>
+                    </div>
+                    <div class="panel-content scrollable">
+                        <ul id="variables-list" class="list-view">
+                            <li class="empty-state">No variables in scope</li>
+                        </ul>
+                    </div>
+                </div>
+            </aside>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/codemirror.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/python/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/javascript/javascript.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/rust/rust.min.js"></script>
+    <script src="/static/app.js"></script>
+</body>
+
+</html>
