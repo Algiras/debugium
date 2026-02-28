@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpStream;
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::{mpsc, oneshot, RwLock};
 use tracing::{debug, error, warn};
@@ -14,7 +15,7 @@ use dap_types::DapMessage;
 type PendingMap = Arc<RwLock<HashMap<u32, oneshot::Sender<Value>>>>;
 
 /// Async DAP client communicating over a subprocess's stdin/stdout
-/// using Content-Length framing as per the DAP spec.
+/// or a TCP connection, using Content-Length framing per the DAP spec.
 pub struct DapClient {
     seq: AtomicU32,
     sender: mpsc::Sender<String>,
@@ -23,8 +24,7 @@ pub struct DapClient {
 }
 
 impl DapClient {
-    /// Spawn a new DAP client wrapping the given child process.
-    /// `event_tx` receives all unsolicited events.
+    /// Wrap a spawned child process's stdin/stdout.
     pub fn new(child: &mut Child, event_tx: mpsc::Sender<Value>) -> Result<Arc<Self>> {
         let stdin = child.stdin.take().context("no stdin")?;
         let stdout = child.stdout.take().context("no stdout")?;
@@ -36,16 +36,33 @@ impl DapClient {
             seq: AtomicU32::new(1),
             sender: tx,
             pending: pending.clone(),
-            event_tx,
+            event_tx: event_tx.clone(),
         });
 
-        // Write task: drains the outgoing channel → adapter stdin
-        tokio::spawn(write_loop(stdin, rx));
-
-        // Read task: reads Content-Length frames from adapter stdout
-        tokio::spawn(read_loop(stdout, pending, client.event_tx.clone()));
+        tokio::spawn(write_loop_stdio(stdin, rx));
+        tokio::spawn(read_loop(BufReader::new(stdout), pending, event_tx));
 
         Ok(client)
+    }
+
+    /// Connect to an already-running DAP server over TCP (e.g. Metals, Java debug server).
+    pub fn from_tcp(stream: TcpStream, event_tx: mpsc::Sender<Value>) -> Arc<Self> {
+        let (tcp_read, tcp_write) = stream.into_split();
+
+        let (tx, rx) = mpsc::channel::<String>(256);
+        let pending: PendingMap = Arc::new(RwLock::new(HashMap::new()));
+
+        let client = Arc::new(DapClient {
+            seq: AtomicU32::new(1),
+            sender: tx,
+            pending: pending.clone(),
+            event_tx: event_tx.clone(),
+        });
+
+        tokio::spawn(write_loop_tcp(tcp_write, rx));
+        tokio::spawn(read_loop(BufReader::new(tcp_read), pending, event_tx));
+
+        client
     }
 
     /// Send a DAP request and wait for the response.
@@ -84,13 +101,13 @@ impl DapClient {
     }
 }
 
-// ─── Content-Length framing ────────────────────────────────────────────────────
+// ─── Content-Length framing ───────────────────────────────────────────────────
 
 fn encode_frame(body: &str) -> String {
     format!("Content-Length: {}\r\n\r\n{}", body.len(), body)
 }
 
-async fn write_loop(mut stdin: ChildStdin, mut rx: mpsc::Receiver<String>) {
+async fn write_loop_stdio(mut stdin: ChildStdin, mut rx: mpsc::Receiver<String>) {
     while let Some(msg) = rx.recv().await {
         if let Err(e) = stdin.write_all(msg.as_bytes()).await {
             error!("write_loop error: {e}");
@@ -99,15 +116,31 @@ async fn write_loop(mut stdin: ChildStdin, mut rx: mpsc::Receiver<String>) {
     }
 }
 
-async fn read_loop(stdout: ChildStdout, pending: PendingMap, event_tx: mpsc::Sender<Value>) {
-    let mut reader = BufReader::new(stdout);
+async fn write_loop_tcp(
+    mut writer: tokio::net::tcp::OwnedWriteHalf,
+    mut rx: mpsc::Receiver<String>,
+) {
+    while let Some(msg) = rx.recv().await {
+        if let Err(e) = writer.write_all(msg.as_bytes()).await {
+            error!("write_loop_tcp error: {e}");
+            break;
+        }
+    }
+}
+
+/// Generic read loop — works with BufReader over any AsyncRead source.
+async fn read_loop<R: tokio::io::AsyncRead + Unpin>(
+    mut reader: BufReader<R>,
+    pending: PendingMap,
+    event_tx: mpsc::Sender<Value>,
+) {
     let mut header = String::new();
 
     loop {
         header.clear();
         match reader.read_line(&mut header).await {
             Ok(0) => {
-                debug!("adapter stdout closed");
+                debug!("adapter stream closed");
                 break;
             }
             Err(e) => {
@@ -117,7 +150,6 @@ async fn read_loop(stdout: ChildStdout, pending: PendingMap, event_tx: mpsc::Sen
             Ok(_) => {}
         }
 
-        // Parse Content-Length
         let trimmed = header.trim();
         if !trimmed.starts_with("Content-Length:") {
             continue;
@@ -138,7 +170,7 @@ async fn read_loop(stdout: ChildStdout, pending: PendingMap, event_tx: mpsc::Sen
 
         // Read body
         let mut buf = vec![0u8; content_len];
-        if let Err(e) = tokio::io::AsyncReadExt::read_exact(&mut reader, &mut buf).await {
+        if let Err(e) = reader.read_exact(&mut buf).await {
             error!("read_loop body error: {e}");
             break;
         }
@@ -168,11 +200,7 @@ async fn read_loop(stdout: ChildStdout, pending: PendingMap, event_tx: mpsc::Sen
                     let _ = tx.send(msg);
                 }
             }
-            Some("event") => {
-                let _ = event_tx.send(msg).await;
-            }
-            _ => {
-                // reverse requests etc — forward as events
+            Some("event") | _ => {
                 let _ = event_tx.send(msg).await;
             }
         }

@@ -28,7 +28,7 @@ tower-http = { version = "0.6", features = ["fs", "cors", "trace"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 dashmap = "6"
 clap = { version = "4", features = ["derive"] }
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 # Frontend (WASM)
 leptos = { version = "0.7", features = ["csr"] }

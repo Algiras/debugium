@@ -17,7 +17,9 @@ web-sys = { workspace = true }
 js-sys = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 gloo-net = { workspace = true }
+gloo-timers = { version = "0.3", features = ["futures"] }
 console_error_panic_hook = "0.1"
+
 
 [package.metadata.leptos]
 output-name = "debugium-ui"
