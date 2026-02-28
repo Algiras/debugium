@@ -1,0 +1,27 @@
+[package]
+name = "debugium-ui"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+dap-types = { path = "../dap-types" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+leptos = { workspace = true }
+wasm-bindgen = { workspace = true }
+web-sys = { workspace = true }
+js-sys = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+gloo-net = { workspace = true }
+console_error_panic_hook = "0.1"
+
+[package.metadata.leptos]
+output-name = "debugium-ui"
+site-root = "dist"
+site-pkg-dir = "pkg"
+style-file = "style/main.css"
+browserquery = "defaults"

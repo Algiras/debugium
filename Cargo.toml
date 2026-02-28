@@ -1,0 +1,42 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/dap-types",
+    "crates/debugium-server",
+    "crates/debugium-ui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Debugium"]
+license = "MIT"
+
+[workspace.dependencies]
+# Shared
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+tracing = "0.1"
+
+# Server
+axum = { version = "0.8", features = ["ws", "macros"] }
+axum-extra = { version = "0.10", features = ["typed-header"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs", "cors", "trace"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+dashmap = "6"
+clap = { version = "4", features = ["derive"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Frontend (WASM)
+leptos = { version = "0.7", features = ["csr"] }
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = [
+    "WebSocket", "MessageEvent", "CloseEvent", "ErrorEvent",
+    "Element", "HtmlElement", "Window", "Document",
+] }
+js-sys = "0.3"
+wasm-bindgen-futures = "0.4"
+gloo-net = { version = "0.6", features = ["websocket"] }
