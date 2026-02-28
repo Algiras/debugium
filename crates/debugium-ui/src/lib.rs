@@ -312,15 +312,49 @@ pub fn App() -> impl IntoView {
                     let id_open = id.clone();
                     let onopen = Closure::wrap(Box::new(move |_: JsValue| {
                         ws_connected_open.update(|m| { m.insert(id_open.clone(), true); });
-                        // If session already paused (e.g. user opened browser late), re-fetch state
-                        let snap = session_data_open.get_untracked();
-                        if let Some(state) = snap.get(&id_open) {
-                            if state.status == "paused" && state.stack_frames.is_empty() {
-                                let thread_id = state.active_thread_id;
-                                send_cmd(&ws_senders_open, &id_open, "stackTrace",
-                                    serde_json::json!({ "threadId": thread_id, "levels": 20 }));
+                        // Fetch /state to replay the stopped event for late-joining clients
+                        let session_data_state = session_data_open.clone();
+                        let ws_senders_state = ws_senders_open.clone();
+                        let id_state = id_open.clone();
+                        leptos::task::spawn_local(async move {
+                            if let Ok(resp) = gloo_net::http::Request::get(
+                                &format!("/state?session={}", id_state)).send().await {
+                                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                                    if json.get("paused").and_then(Value::as_bool).unwrap_or(false) {
+                                        if let Some(ev) = json.get("stopped_event") {
+                                            // Replay the stopped event through the normal handler
+                                            let envelope = serde_json::json!({
+                                                "session": id_state,
+                                                "msg": ev
+                                            });
+                                            if let Ok(env) = serde_json::from_value::<WsEnvelope>(envelope) {
+                                                // Get thread from stopped event and request stack
+                                                let thread_id = ev.get("body")
+                                                    .and_then(|b| b.get("threadId"))
+                                                    .and_then(Value::as_u64)
+                                                    .unwrap_or(1) as u32;
+                                                // Update status to paused
+                                                session_data_state.update(|map| {
+                                                    let s = map.entry(id_state.clone()).or_insert_with(|| SessionState {
+                                                        id: id_state.clone(), status: "running".into(), ..Default::default()
+                                                    });
+                                                    s.status = "paused".into();
+                                                    s.active_thread_id = Some(thread_id);
+                                                    let reason = ev.get("body")
+                                                        .and_then(|b| b.get("reason"))
+                                                        .and_then(Value::as_str)
+                                                        .unwrap_or("breakpoint");
+                                                    s.stop_reason = reason.to_string();
+                                                });
+                                                // Request stack trace
+                                                send_cmd(&ws_senders_state, &id_state, "stackTrace",
+                                                    serde_json::json!({ "threadId": thread_id, "levels": 20 }));
+                                            }
+                                        }
+                                    }
+                                }
                             }
-                        }
+                        });
                         // Fetch /annotations and /findings to populate initial state
                         let session_data_ann = session_data_open.clone();
                         let id_ann = id_open.clone();
@@ -485,28 +519,33 @@ pub fn App() -> impl IntoView {
     let lw = layout.left_width;
     let rw = layout.right_width;
 
+    // Auto-collapse sessions sidebar when only 1 session
+    let multi_session = move || sessions.get().len() > 1;
+
     view! {
         <div id="app" class:narrow-mode=move || nm.get()>
             <Header active_session=active_session session_data=session_data.read_only() />
             <ProcessInfoBar active_session=active_session.read_only() session_metas=session_metas.read_only() />
             <div class="dashboard-wrapper">
 
-                // ── Left icon rail (always visible) ──
-                <div class="icon-rail icon-rail-left">
-                    <button
-                        class="rail-btn"
-                        class:rail-btn-active=move || !lc.get()
-                        on:click=move |_| lc.update(|v| *v = !*v)
-                        title="Sessions"
-                    >
-                        <span class="rail-icon">"⬚"</span>
-                        <span class="rail-label">"Sessions"</span>
-                    </button>
-                </div>
+                // ── Left icon rail — only show when multiple sessions ──
+                <Show when=move || multi_session()>
+                    <div class="icon-rail icon-rail-left">
+                        <button
+                            class="rail-btn"
+                            class:rail-btn-active=move || !lc.get()
+                            on:click=move |_| lc.update(|v| *v = !*v)
+                            title="Sessions"
+                        >
+                            <span class="rail-icon">"⬚"</span>
+                            <span class="rail-label">"Sessions"</span>
+                        </button>
+                    </div>
+                </Show>
 
                 <aside
                     class="sidebar sidebar-left"
-                    class:collapsed=move || lc.get()
+                    class:collapsed=move || lc.get() || !multi_session()
                     style=move || format!("width: {}px", lw.get())
                 >
                     <SessionsPanel sessions=sessions session_metas=session_metas active=active_session />
@@ -1066,16 +1105,24 @@ fn Header(
     view! {
         <header>
             <div class="header-left">
-                <h1>"Debugium " <span class="badge">"Live"</span></h1>
-                // Server heartbeat pulse — flashes on every DAP event
                 {
+                    let wsc_badge = use_context::<WsConnected>().map(|c| c.0).unwrap();
                     let les = use_context::<LastEventSession>().map(|c| c.0).unwrap();
-                    let wsc = use_context::<WsConnected>().map(|c| c.0).unwrap();
+                    let wsc_pulse = wsc_badge.clone();
                     view! {
+                        <h1>"Debugium "
+                            <span
+                                class="badge"
+                                class:badge-offline=move || wsc_badge.get().values().all(|&v| !v)
+                            >
+                                {move || if wsc_badge.get().values().any(|&v| v) { "Live" } else { "Off" }}
+                            </span>
+                        </h1>
+                        // Server heartbeat pulse
                         <span
                             class="server-pulse"
                             class:server-pulse-active=move || les.get().is_some()
-                            class:server-offline=move || wsc.get().values().all(|&v| !v)
+                            class:server-offline=move || wsc_pulse.get().values().all(|&v| !v)
                             title="Server connection"
                         ></span>
                     }
@@ -1492,11 +1539,8 @@ fn SourcePanel(
         let snap = session_data.get();
         let Some(state) = snap.get(&id) else { return; };
         if let Some(path) = &state.source_path {
-            let cur = active_tab.get_untracked();
-            // Auto-follow execution if no explicit tab selected, or tab matches exec file
-            if cur.is_none() || cur.as_ref() == Some(path) {
-                active_tab.set(Some(path.clone()));
-            }
+            // Always follow execution when stopped (source_path set by stopped event)
+            active_tab.set(Some(path.clone()));
         }
     });
 
@@ -2046,7 +2090,7 @@ fn ConsolePanel(
     };
 
     view! {
-        <div class="panel console-panel" style=move || if layout.console_collapsed.get() { "flex-grow:0" } else { "flex-grow:1" }>
+        <div class="panel console-panel" style=move || if layout.console_collapsed.get() { "height:32px;flex-shrink:0;flex-grow:0" } else { "" }>
             <div class="panel-header">
                 <h2>"Debug Console"</h2>
                 <button

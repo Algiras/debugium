@@ -299,6 +299,23 @@ pub async fn findings_handler(
     Json(json!({ "findings": items })).into_response()
 }
 
+/// Returns the last stopped event for the session, so late-joining UI clients
+/// can restore the paused state without waiting for a new event.
+pub async fn state_handler(
+    Query(params): Query<SessionParam>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let session_id = params.session.unwrap_or_else(|| "default".to_string());
+    let Some(session) = state.sessions.get(&session_id).await else {
+        return Json(json!({ "paused": false })).into_response();
+    };
+    let last = session.last_stopped.read().await.clone();
+    match last {
+        Some(ev) => Json(json!({ "paused": true, "stopped_event": ev })).into_response(),
+        None => Json(json!({ "paused": false })).into_response(),
+    }
+}
+
 fn parse_breakpoints_str(raw: Vec<String>) -> Vec<(String, Vec<u32>)> {
     let mut map: std::collections::HashMap<String, Vec<u32>> = std::collections::HashMap::new();
     for bp in raw {

@@ -86,6 +86,11 @@ impl DapClient {
         Ok(response)
     }
 
+    /// Send a pre-encoded DAP frame (e.g. a reverse-request response).
+    pub async fn send_raw(&self, raw: String) -> Result<()> {
+        self.sender.send(raw).await.context("send_raw failed")
+    }
+
     /// Fire-and-forget: send a request without waiting for response.
     pub async fn notify(&self, command: &str, arguments: Option<Value>) -> Result<()> {
         let seq = self.seq.fetch_add(1, Ordering::SeqCst);
@@ -105,6 +110,11 @@ impl DapClient {
 
 fn encode_frame(body: &str) -> String {
     format!("Content-Length: {}\r\n\r\n{}", body.len(), body)
+}
+
+/// Public helper — encode a JSON value as a DAP Content-Length frame.
+pub fn encode_dap_frame(body: &str) -> String {
+    encode_frame(body)
 }
 
 async fn write_loop_stdio(mut stdin: ChildStdin, mut rx: mpsc::Receiver<String>) {
@@ -191,7 +201,7 @@ async fn read_loop<R: tokio::io::AsyncRead + Unpin>(
             }
         };
 
-        debug!("[DAP IN] {msg}");
+        tracing::info!("[DAP IN] {}", raw.chars().take(300).collect::<String>());
 
         match msg.get("type").and_then(Value::as_str) {
             Some("response") => {
@@ -199,6 +209,33 @@ async fn read_loop<R: tokio::io::AsyncRead + Unpin>(
                 if let Some(tx) = pending.write().await.remove(&seq) {
                     let _ = tx.send(msg);
                 }
+            }
+            Some("request") => {
+                // Reverse request from adapter (e.g. startDebugging, runInTerminal).
+                let req_seq = msg.get("seq").and_then(Value::as_u64).unwrap_or(0);
+                let command = msg.get("command").and_then(Value::as_str).unwrap_or("").to_string();
+                tracing::debug!("[DAP reverse-req] {command} seq={req_seq}");
+
+                // For `startDebugging`: js-debug wants us to create a child session.
+                // Respond with success=true so js-debug proceeds to activate the
+                // pending V8 target; session.rs handles opening the child DAP connection.
+                // Respond success=true so js-debug proceeds to activate the pending V8 target.
+                let (success, message) = (true, String::new());
+
+                let ack = serde_json::json!({
+                    "seq": 0,
+                    "type": "response",
+                    "request_seq": req_seq,
+                    "success": success,
+                    "command": command,
+                    "message": message,
+                    "body": {}
+                });
+                let _ = event_tx.send(serde_json::json!({
+                    "type": "reverse_request_ack",
+                    "ack": ack,
+                    "original": msg,
+                })).await;
             }
             Some("event") | _ => {
                 let _ = event_tx.send(msg).await;

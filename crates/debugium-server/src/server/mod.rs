@@ -42,6 +42,7 @@ pub async fn start(
         .route("/breakpoints", get(routes::breakpoints_handler))
         .route("/annotations", get(routes::annotations_handler))
         .route("/findings", get(routes::findings_handler))
+        .route("/state", get(routes::state_handler))
         .fallback_service(ServeDir::new(&static_dir))
         .layer(CorsLayer::permissive())
         .with_state(state);

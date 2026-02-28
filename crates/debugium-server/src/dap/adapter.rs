@@ -172,24 +172,21 @@ impl Adapter {
             }),
 
             AdapterKind::TypeScript => {
-                // Detect which TS runner is available
-                let (runtime, runtime_args) = if which_cmd("tsx") {
-                    ("tsx", vec![])
-                } else if which_cmd("ts-node") {
-                    ("node", vec!["--loader", "ts-node/esm", "--experimental-specifier-resolution=node"])
-                } else {
-                    // Fall back to plain node — user must have compiled first
-                    ("node", vec![])
-                };
+                let runtime = if which_cmd("tsx") { "tsx" } else { "node" };
                 json!({
                     "type": "pwa-node",
                     "request": "launch",
                     "program": program.to_str().unwrap_or(""),
                     "cwd": cwd.to_str().unwrap_or(""),
                     "console": "internalConsole",
-                    "skipFiles": ["<node_internals>/**", "**/node_modules/**"],
+                    "skipFiles": ["<node_internals>/**"],
                     "runtimeExecutable": runtime,
-                    "runtimeArgs": runtime_args,
+                    "runtimeArgs": [],
+                    "stopOnEntry": false,
+                    "sourceMaps": true,
+                    "outFiles": [],
+                    "pauseForSourceMap": false,
+                    "smartStep": false,
                 })
             }
 
@@ -242,6 +239,12 @@ impl Adapter {
     /// Whether this adapter connects via TCP rather than spawning a subprocess.
     pub fn is_tcp_attach(&self) -> bool {
         matches!(self.kind, AdapterKind::Metals { .. })
+    }
+
+    /// True for adapters that spawn a TCP server and print the port to stdout
+    /// (js-debug for Node.js / TypeScript).
+    pub fn is_tcp_after_spawn(&self) -> bool {
+        matches!(self.kind, AdapterKind::NodeJs | AdapterKind::TypeScript)
     }
 
     /// TCP port for attach-mode adapters.
