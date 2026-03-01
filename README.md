@@ -26,7 +26,16 @@ Debug Python, JavaScript/TypeScript, and Rust programs from your browser — wit
 
 ## Install
 
-### macOS / Linux (recommended)
+### Claude Code Plugin (recommended)
+
+```
+/plugin marketplace add Algiras/debugium
+/plugin install debugium@debugium
+```
+
+Then add to your project's `.mcp.json` (see [MCP config](#mcp-config) below).
+
+### macOS / Linux binary
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Algiras/debugium/main/install.sh | bash
