@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Debugium — Multi-language debugger with LLM integration</title>
-  <meta name="description" content="Debug Python, JavaScript, and Rust from your browser. AI-driven analysis via MCP." />
+  <meta name="description" content="Debug Python, JavaScript, TypeScript, and Rust from your browser. 40+ MCP tools for AI-driven analysis via Claude." />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -22,163 +22,105 @@
       --purple: #bc8cff;
     }
 
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: var(--bg);
-      color: var(--text);
-      line-height: 1.6;
-    }
-
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
     a { color: var(--accent); text-decoration: none; }
     a:hover { text-decoration: underline; }
 
     /* ── Nav ── */
     nav {
       position: sticky; top: 0; z-index: 100;
-      background: rgba(13,17,23,.92);
-      backdrop-filter: blur(12px);
+      background: rgba(13,17,23,.92); backdrop-filter: blur(12px);
       border-bottom: 1px solid var(--border);
-      padding: 0 2rem;
-      display: flex; align-items: center; justify-content: space-between;
-      height: 56px;
+      padding: 0 2rem; display: flex; align-items: center; justify-content: space-between; height: 56px;
     }
     .nav-logo { font-weight: 700; font-size: 1.15rem; color: var(--text); display: flex; align-items: center; gap: .5rem; }
     .nav-logo .badge { font-size: .65rem; background: var(--green); color: #000; padding: 1px 6px; border-radius: 20px; font-weight: 600; }
-    .nav-links { display: flex; gap: 1.5rem; font-size: .9rem; color: var(--muted); }
+    .nav-links { display: flex; gap: 1.5rem; font-size: .9rem; }
     .nav-links a { color: var(--muted); }
     .nav-links a:hover { color: var(--text); text-decoration: none; }
 
     /* ── Hero ── */
-    .hero {
-      text-align: center;
-      padding: 6rem 2rem 3rem;
-      max-width: 860px;
-      margin: 0 auto;
-    }
-    .hero h1 {
-      font-size: clamp(2.2rem, 5vw, 3.4rem);
-      font-weight: 800;
-      letter-spacing: -.02em;
-      line-height: 1.15;
-      margin-bottom: 1.2rem;
-    }
+    .hero { text-align: center; padding: 6rem 2rem 3rem; max-width: 860px; margin: 0 auto; }
+    .hero h1 { font-size: clamp(2.2rem, 5vw, 3.4rem); font-weight: 800; letter-spacing: -.02em; line-height: 1.15; margin-bottom: 1.2rem; }
     .hero h1 span { color: var(--accent); }
-    .hero p {
-      font-size: 1.15rem;
-      color: var(--muted);
-      max-width: 600px;
-      margin: 0 auto 2.5rem;
-    }
+    .hero p { font-size: 1.15rem; color: var(--muted); max-width: 620px; margin: 0 auto 2.5rem; }
     .hero-btns { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
-    .btn {
-      display: inline-flex; align-items: center; gap: .45rem;
-      padding: .65rem 1.4rem;
-      border-radius: 8px;
-      font-size: .95rem; font-weight: 600;
-      transition: filter .15s;
-      cursor: pointer;
-    }
+    .btn { display: inline-flex; align-items: center; gap: .45rem; padding: .65rem 1.4rem; border-radius: 8px; font-size: .95rem; font-weight: 600; transition: filter .15s; cursor: pointer; }
     .btn:hover { filter: brightness(1.12); text-decoration: none; }
     .btn-primary { background: var(--accent); color: #000; }
     .btn-secondary { background: var(--bg3); color: var(--text); border: 1px solid var(--border); }
 
     /* ── Screenshot ── */
-    .screenshot-wrap {
-      max-width: 1100px;
-      margin: 3rem auto 5rem;
-      padding: 0 1.5rem;
-    }
-    .screenshot-wrap img {
-      width: 100%;
-      border-radius: 12px;
-      border: 1px solid var(--border);
-      box-shadow: 0 24px 80px rgba(0,0,0,.6);
-    }
+    .screenshot-wrap { max-width: 1100px; margin: 3rem auto 5rem; padding: 0 1.5rem; }
+    .screenshot-wrap img { width: 100%; border-radius: 12px; border: 1px solid var(--border); box-shadow: 0 24px 80px rgba(0,0,0,.6); }
+
+    /* ── Section wrapper ── */
+    .section { max-width: 1100px; margin: 0 auto 5rem; padding: 0 1.5rem; }
+    .section-narrow { max-width: 760px; margin: 0 auto 5rem; padding: 0 1.5rem; }
+    .section h2, .section-narrow h2 { font-size: 1.8rem; margin-bottom: 2rem; text-align: center; }
 
     /* ── Install ── */
-    .install-section {
-      max-width: 720px;
-      margin: 0 auto 5rem;
-      padding: 0 1.5rem;
-      text-align: center;
-    }
-    .install-section h2 { font-size: 1.6rem; margin-bottom: .75rem; }
-    .install-section p { color: var(--muted); margin-bottom: 1.5rem; }
+    .install-tabs { display: flex; gap: .5rem; margin-bottom: 1rem; flex-wrap: wrap; }
+    .tab-btn { background: var(--bg3); border: 1px solid var(--border); color: var(--muted); padding: .35rem .9rem; border-radius: 6px; font-size: .85rem; cursor: pointer; transition: all .15s; }
+    .tab-btn.active { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 600; }
+    .tab-pane { display: none; }
+    .tab-pane.active { display: block; }
     .code-block {
-      background: var(--bg2);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 1.1rem 1.4rem;
-      text-align: left;
-      font-family: 'SF Mono', 'Fira Code', monospace;
-      font-size: .9rem;
-      color: var(--green);
-      position: relative;
+      background: var(--bg2); border: 1px solid var(--border); border-radius: 10px;
+      padding: 1.1rem 1.4rem; font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: .88rem; color: var(--green); overflow-x: auto; white-space: pre;
     }
-    .code-block .comment { color: var(--muted); }
+    .code-block .c { color: var(--muted); }
+    .code-block .k { color: var(--accent); }
+    .code-block .s { color: var(--yellow); }
 
     /* ── Features ── */
-    .features {
-      max-width: 1100px;
-      margin: 0 auto 5rem;
-      padding: 0 1.5rem;
-    }
-    .features h2 { text-align: center; font-size: 1.8rem; margin-bottom: 3rem; }
-    .feature-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      gap: 1.25rem;
-    }
-    .feature-card {
-      background: var(--bg2);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 1.5rem;
-    }
+    .feature-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.25rem; }
+    .feature-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; }
     .feature-card .icon { font-size: 1.8rem; margin-bottom: .75rem; }
     .feature-card h3 { font-size: 1.05rem; margin-bottom: .4rem; }
     .feature-card p { color: var(--muted); font-size: .9rem; }
+    .feature-card .tag { display: inline-block; font-size: .7rem; background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; color: var(--green); margin-top: .5rem; font-family: monospace; }
 
     /* ── Languages ── */
-    .langs {
-      max-width: 860px;
-      margin: 0 auto 5rem;
-      padding: 0 1.5rem;
-      text-align: center;
-    }
-    .langs h2 { font-size: 1.8rem; margin-bottom: 2rem; }
     .lang-pills { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
-    .lang-pill {
-      display: flex; align-items: center; gap: .5rem;
-      background: var(--bg2); border: 1px solid var(--border);
-      border-radius: 8px; padding: .5rem 1rem;
-      font-size: .95rem; font-weight: 500;
-    }
+    .lang-pill { display: flex; align-items: center; gap: .5rem; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: .5rem 1rem; font-size: .95rem; font-weight: 500; }
 
-    /* ── MCP ── */
-    .mcp-section {
-      max-width: 860px;
-      margin: 0 auto 5rem;
-      padding: 2.5rem 1.5rem;
-      background: var(--bg2);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-    }
-    .mcp-section h2 { font-size: 1.6rem; margin-bottom: .75rem; }
-    .mcp-section p { color: var(--muted); margin-bottom: 1.5rem; }
-    .tool-table { width: 100%; border-collapse: collapse; font-size: .9rem; }
-    .tool-table th { text-align: left; padding: .5rem .75rem; color: var(--muted); font-weight: 500; border-bottom: 1px solid var(--border); }
-    .tool-table td { padding: .5rem .75rem; border-bottom: 1px solid rgba(48,54,61,.5); }
-    .tool-table td:first-child { font-family: monospace; color: var(--purple); }
+    /* ── Workflow ── */
+    .workflow-steps { display: flex; flex-direction: column; gap: 1rem; }
+    .workflow-step { display: flex; gap: 1.25rem; align-items: flex-start; }
+    .step-num { flex-shrink: 0; width: 2rem; height: 2rem; border-radius: 50%; background: var(--accent); color: #000; font-weight: 700; font-size: .85rem; display: flex; align-items: center; justify-content: center; margin-top: .15rem; }
+    .step-body h3 { font-size: 1rem; margin-bottom: .2rem; }
+    .step-body p { color: var(--muted); font-size: .9rem; }
+    .step-body code { font-family: monospace; font-size: .85rem; background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; color: var(--purple); }
+
+    /* ── MCP tools ── */
+    .mcp-box { background: var(--bg2); border: 1px solid var(--border); border-radius: 16px; padding: 2.5rem; }
+    .mcp-box h2 { margin-bottom: .75rem; font-size: 1.6rem; }
+    .mcp-box > p { color: var(--muted); margin-bottom: 2rem; }
+    .tool-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.5rem; }
+    .tool-group h3 { font-size: .8rem; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: .6rem; }
+    .tool-list { display: flex; flex-direction: column; gap: .3rem; }
+    .tool-row { display: flex; gap: .75rem; align-items: baseline; font-size: .88rem; }
+    .tool-name { font-family: monospace; color: var(--purple); white-space: nowrap; }
+    .tool-row .star { color: var(--yellow); }
+    .tool-desc { color: var(--muted); font-size: .85rem; }
+    .tool-note { margin-top: 1.5rem; padding: 1rem 1.25rem; background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; font-size: .875rem; color: var(--muted); }
+    .tool-note strong { color: var(--text); }
+
+    /* ── Setup ── */
+    .setup-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+    @media (max-width: 640px) { .setup-grid { grid-template-columns: 1fr; } }
+    .setup-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; }
+    .setup-card h3 { font-size: 1rem; margin-bottom: 1rem; }
+
+    /* ── Keyboard shortcuts ── */
+    .kb-grid { display: flex; flex-wrap: wrap; gap: .75rem; justify-content: center; }
+    .kb-item { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: .6rem 1rem; display: flex; gap: .6rem; align-items: center; font-size: .9rem; }
+    .key { font-family: monospace; background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; padding: 1px 7px; font-size: .82rem; color: var(--text); }
 
     /* ── Footer ── */
-    footer {
-      border-top: 1px solid var(--border);
-      text-align: center;
-      padding: 2.5rem 1rem;
-      color: var(--muted);
-      font-size: .875rem;
-    }
+    footer { border-top: 1px solid var(--border); text-align: center; padding: 2.5rem 1rem; color: var(--muted); font-size: .875rem; }
     footer a { color: var(--muted); }
   </style>
 </head>
@@ -189,54 +131,123 @@
   <div class="nav-links">
     <a href="#install">Install</a>
     <a href="#features">Features</a>
-    <a href="#mcp">MCP</a>
+    <a href="#mcp">MCP Tools</a>
+    <a href="#workflow">Workflow</a>
     <a href="https://github.com/Algiras/debugium">GitHub</a>
   </div>
 </nav>
 
+<!-- ── Hero ── -->
 <section class="hero">
   <h1>Debug any language.<br/><span>Powered by AI.</span></h1>
-  <p>Real-time web UI for Python, JavaScript, and Rust debuggers — with LLM integration via the Model Context Protocol.</p>
+  <p>Real-time browser UI for Python, JavaScript, TypeScript, and Rust debuggers — with 40+ MCP tools so Claude can step through your code, inspect live values, and annotate the UI.</p>
   <div class="hero-btns">
-    <a class="btn btn-primary" href="#install">
-      ↓ Install
-    </a>
-    <a class="btn btn-secondary" href="https://github.com/Algiras/debugium">
-      ★ GitHub
-    </a>
+    <a class="btn btn-primary" href="#install">↓ Install</a>
+    <a class="btn btn-secondary" href="https://github.com/Algiras/debugium">★ GitHub</a>
   </div>
 </section>
 
 <div class="screenshot-wrap">
-  <img src="screenshot.png" alt="Debugium UI — paused at a breakpoint in cache.py, variables panel showing key='apple', self=Cache, breakpoints listed" />
+  <img src="screenshot.png" alt="Debugium UI — paused at a breakpoint, variables panel, findings panel, and execution timeline visible" />
 </div>
 
-<section class="install-section" id="install">
-  <h2>One-line install</h2>
-  <p>Works on macOS and Linux. Windows binaries available on the <a href="https://github.com/Algiras/debugium/releases">releases page</a>.</p>
-  <div class="code-block">
-    <span class="comment"># macOS / Linux</span><br/>
-    curl -fsSL https://raw.githubusercontent.com/Algiras/debugium/main/install.sh | bash
+<!-- ── Install ── -->
+<section class="section-narrow" id="install">
+  <h2>Install</h2>
+  <div class="install-tabs">
+    <button class="tab-btn active" onclick="showTab('tab-curl',this)">macOS / Linux</button>
+    <button class="tab-btn" onclick="showTab('tab-plugin',this)">Claude Code Plugin</button>
+    <button class="tab-btn" onclick="showTab('tab-source',this)">From source</button>
   </div>
-  <br/>
-  <div class="code-block">
-    <span class="comment"># Then launch a debug session</span><br/>
-    debugium launch my_script.py --adapter python
+
+  <div id="tab-curl" class="tab-pane active">
+    <div class="code-block"><span class="c"># One-line install</span>
+curl -fsSL https://raw.githubusercontent.com/Algiras/debugium/main/install.sh | bash
+
+<span class="c"># Start debugging</span>
+debugium launch my_script.py --adapter python --breakpoint /abs/path/my_script.py:42</div>
+  </div>
+
+  <div id="tab-plugin" class="tab-pane">
+    <div class="code-block"><span class="c"># Install via Claude Code plugin marketplace</span>
+/plugin marketplace add Algiras/debugium
+/plugin install debugium@debugium
+
+<span class="c"># Add .mcp.json to your project root</span>
+{
+  <span class="s">"mcpServers"</span>: {
+    <span class="s">"debugium"</span>: { <span class="s">"command"</span>: <span class="s">"debugium"</span>, <span class="s">"args"</span>: [<span class="s">"mcp"</span>] }
+  }
+}
+
+<span class="c"># Then launch a session — Claude gains access to all 40+ tools</span>
+debugium launch my_script.py --adapter python --breakpoint /abs/path/my_script.py:42</div>
+  </div>
+
+  <div id="tab-source" class="tab-pane">
+    <div class="code-block"><span class="c"># Prerequisites: Rust stable + wasm-pack</span>
+cargo install wasm-pack
+
+<span class="c"># Build UI (WASM)</span>
+wasm-pack build crates/debugium-ui --target web --out-dir pkg
+cp crates/debugium-ui/pkg/cm_init.js         crates/debugium-ui/dist/pkg/
+cp crates/debugium-ui/pkg/debugium_ui.js      crates/debugium-ui/dist/pkg/
+cp crates/debugium-ui/pkg/debugium_ui_bg.wasm crates/debugium-ui/dist/pkg/
+
+<span class="c"># Build &amp; install server</span>
+cargo install --path crates/debugium-server</div>
   </div>
 </section>
 
-<section class="features" id="features">
+<!-- ── Features ── -->
+<section class="section" id="features">
   <h2>Everything you need</h2>
   <div class="feature-grid">
     <div class="feature-card">
       <div class="icon">🌐</div>
       <h3>Real-time web UI</h3>
-      <p>Source viewer with syntax highlighting, breakpoint gutters, execution arrow, tabbed file navigation.</p>
+      <p>Source viewer with syntax highlighting, breakpoint gutters, execution arrow, tabbed file navigation, and collapsible panels.</p>
     </div>
     <div class="feature-card">
       <div class="icon">🤖</div>
-      <h3>LLM integration</h3>
-      <p>Expose your debug session as MCP tools for Claude or any AI. Let the LLM inspect variables, set breakpoints, and annotate the UI.</p>
+      <h3>40+ MCP tools</h3>
+      <p>Expose your full debug session to Claude. The LLM can step code, inspect live values, evaluate expressions, and annotate the UI — all visible in real-time.</p>
+      <span class="tag">get_debug_context</span>
+    </div>
+    <div class="feature-card">
+      <div class="icon">📈</div>
+      <h3>Execution timeline</h3>
+      <p>Every stop recorded with file, line, stack summary, and changed variables. Query with <code>get_variable_history</code> to trace when a value went wrong.</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">👁️</div>
+      <h3>Watch expressions</h3>
+      <p>Add expressions that are evaluated automatically at every breakpoint and shown in a dedicated Watch panel.</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">📎</div>
+      <h3>Annotations &amp; findings</h3>
+      <p>LLM (or you) pin colored notes to source lines and record structured conclusions in the Findings panel — visible to both human and AI.</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">🔍</div>
+      <h3>Variable inspection</h3>
+      <p>Expand nested objects, filter by name, edit values inline, and see diff highlighting on what changed at each stop.</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">🗂️</div>
+      <h3>Multi-session</h3>
+      <p>Debug multiple programs simultaneously. Each session has its own panels, timeline, breakpoints, and call stack.</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">⚡</div>
+      <h3>Conditional breakpoints</h3>
+      <p>Break only when a condition expression is true. Set per-line conditions via the UI or via <code>set_breakpoint</code> MCP tool.</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">🔄</div>
+      <h3>Auto-reconnect</h3>
+      <p>The UI reconnects automatically after a dropped WebSocket. The status bar shows connection state and last LLM query at a glance.</p>
     </div>
     <div class="feature-card">
       <div class="icon">⌨️</div>
@@ -244,24 +255,20 @@
       <p>F5 continue, F10 step over, F11 step in, Shift+F11 step out. Full keyboard control without leaving your browser.</p>
     </div>
     <div class="feature-card">
-      <div class="icon">🔍</div>
-      <h3>Variable inspection</h3>
-      <p>Expand nested objects, filter by name, double-click to edit values inline. Diff highlighting shows what changed.</p>
-    </div>
-    <div class="feature-card">
-      <div class="icon">🗂️</div>
-      <h3>Multi-session</h3>
-      <p>Debug multiple programs at the same time. Each session has its own panels, breakpoints, and call stack.</p>
-    </div>
-    <div class="feature-card">
       <div class="icon">🌙</div>
       <h3>Dark &amp; light mode</h3>
       <p>Toggle with Ctrl+D or the toolbar button. Preference is saved across sessions.</p>
     </div>
+    <div class="feature-card">
+      <div class="icon">🧵</div>
+      <h3>Multi-thread &amp; subprocess</h3>
+      <p>Inspect all threads by ID, switch frames, and auto-attach to child processes spawned during a debug session.</p>
+    </div>
   </div>
 </section>
 
-<section class="langs">
+<!-- ── Languages ── -->
+<section class="section-narrow">
   <h2>Multi-language support</h2>
   <div class="lang-pills">
     <div class="lang-pill">🐍 Python <span style="color:var(--muted);font-size:.8rem">via debugpy</span></div>
@@ -271,31 +278,207 @@
   </div>
 </section>
 
-<section class="mcp-section" id="mcp" style="margin-left:auto;margin-right:auto;max-width:860px;">
-  <h2>MCP Tools for AI Debugging</h2>
-  <p>Add Debugium to your Claude config and let the LLM step through your code, inspect state, and post findings directly into the UI.</p>
-  <table class="tool-table">
-    <thead>
-      <tr><th>Tool</th><th>What it does</th></tr>
-    </thead>
-    <tbody>
-      <tr><td>get_debug_context</td><td>Paused location, locals, call stack, and a source window</td></tr>
-      <tr><td>set_breakpoint</td><td>Set a breakpoint at file:line, with optional condition</td></tr>
-      <tr><td>dap_request</td><td>Send any raw DAP command to the adapter</td></tr>
-      <tr><td>get_console_output</td><td>Read recent stdout/stderr from the debuggee</td></tr>
-      <tr><td>list_sessions</td><td>Discover all running debug sessions</td></tr>
-      <tr><td>annotate</td><td>Add a gutter annotation visible in the source editor</td></tr>
-      <tr><td>add_finding</td><td>Post a structured finding to the Findings panel</td></tr>
-      <tr><td>step_until</td><td>Step until a condition expression becomes true</td></tr>
-      <tr><td>run_until_exception</td><td>Continue until an exception is raised</td></tr>
-    </tbody>
-  </table>
+<!-- ── MCP Tools ── -->
+<section class="section" id="mcp">
+  <div class="mcp-box">
+    <h2>MCP Tools for AI Debugging</h2>
+    <p>Add Debugium to your project's <code>.mcp.json</code> and Claude gains access to 40+ tools covering every aspect of a debug session.</p>
+
+    <div class="tool-groups">
+      <div>
+        <div class="tool-group">
+          <h3>Orient (start here)</h3>
+          <div class="tool-list">
+            <div class="tool-row"><span class="tool-name">get_debug_context</span><span class="star">★</span><span class="tool-desc">Paused location + locals + stack + source window in one call</span></div>
+            <div class="tool-row"><span class="tool-name">get_sessions</span><span class="tool-desc">List active sessions</span></div>
+          </div>
+        </div>
+        <br/>
+        <div class="tool-group">
+          <h3>Execution</h3>
+          <div class="tool-list">
+            <div class="tool-row"><span class="tool-name">step_over</span><span class="tool-desc">Step to next line — <strong>blocking</strong></span></div>
+            <div class="tool-row"><span class="tool-name">step_in</span><span class="tool-desc">Step into function — <strong>blocking</strong></span></div>
+            <div class="tool-row"><span class="tool-name">step_out</span><span class="tool-desc">Step out of function — <strong>blocking</strong></span></div>
+            <div class="tool-row"><span class="tool-name">continue_execution</span><span class="tool-desc">Resume; returns <code>console_line_count</code></span></div>
+            <div class="tool-row"><span class="tool-name">pause / disconnect</span><span class="tool-desc">Pause or end the session</span></div>
+          </div>
+        </div>
+        <br/>
+        <div class="tool-group">
+          <h3>Breakpoints</h3>
+          <div class="tool-list">
+            <div class="tool-row"><span class="tool-name">set_breakpoint</span><span class="tool-desc">Single breakpoint with optional condition</span></div>
+            <div class="tool-row"><span class="tool-name">set_breakpoints</span><span class="tool-desc">Multiple lines in one file</span></div>
+            <div class="tool-row"><span class="tool-name">set_function_breakpoints</span><span class="tool-desc">Break on function name</span></div>
+            <div class="tool-row"><span class="tool-name">set_exception_breakpoints</span><span class="tool-desc">Break on raised/uncaught exceptions</span></div>
+            <div class="tool-row"><span class="tool-name">list_breakpoints / clear_breakpoints</span><span class="tool-desc"></span></div>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div class="tool-group">
+          <h3>Inspection</h3>
+          <div class="tool-list">
+            <div class="tool-row"><span class="tool-name">get_stack_trace</span><span class="tool-desc">Full call stack with frame IDs</span></div>
+            <div class="tool-row"><span class="tool-name">get_scopes</span><span class="tool-desc">Variable scopes for a frame</span></div>
+            <div class="tool-row"><span class="tool-name">get_variables</span><span class="tool-desc">Expand a scope or nested object</span></div>
+            <div class="tool-row"><span class="tool-name">evaluate</span><span class="tool-desc">Evaluate any expression in a frame</span></div>
+            <div class="tool-row"><span class="tool-name">get_threads</span><span class="tool-desc">List threads</span></div>
+            <div class="tool-row"><span class="tool-name">get_source</span><span class="tool-desc">Source file with optional line zoom</span></div>
+          </div>
+        </div>
+        <br/>
+        <div class="tool-group">
+          <h3>Output &amp; History</h3>
+          <div class="tool-list">
+            <div class="tool-row"><span class="tool-name">get_console_output</span><span class="tool-desc">Last N lines of stdout/stderr</span></div>
+            <div class="tool-row"><span class="tool-name">wait_for_output</span><span class="tool-desc">Poll until regex matches (with <code>from_line</code>)</span></div>
+            <div class="tool-row"><span class="tool-name">get_timeline</span><span class="tool-desc">All stops with changed vars and stack</span></div>
+            <div class="tool-row"><span class="tool-name">get_variable_history</span><span class="tool-desc">Trace a variable's value across all stops</span></div>
+          </div>
+        </div>
+        <br/>
+        <div class="tool-group">
+          <h3>Annotations, Findings &amp; Watches</h3>
+          <div class="tool-list">
+            <div class="tool-row"><span class="tool-name">annotate</span><span class="tool-desc">Pin colored note on a source line</span></div>
+            <div class="tool-row"><span class="tool-name">get_annotations</span><span class="tool-desc">Read back all annotations</span></div>
+            <div class="tool-row"><span class="tool-name">add_finding</span><span class="tool-desc">Record conclusion in Findings panel</span></div>
+            <div class="tool-row"><span class="tool-name">get_findings</span><span class="tool-desc">Read back all findings</span></div>
+            <div class="tool-row"><span class="tool-name">add_watch / get_watches</span><span class="tool-desc">Watch expressions evaluated at every stop</span></div>
+          </div>
+        </div>
+        <br/>
+        <div class="tool-group">
+          <h3>Compound</h3>
+          <div class="tool-list">
+            <div class="tool-row"><span class="tool-name">step_until</span><span class="tool-desc">Step until condition is true</span></div>
+            <div class="tool-row"><span class="tool-name">run_until_exception</span><span class="tool-desc">Continue until exception raised</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tool-note">
+      <strong>Blocking steps:</strong> <code>step_over</code>, <code>step_in</code>, and <code>step_out</code> wait for the adapter to pause before returning — safe to chain back-to-back without sleeps.<br/>
+      <strong>Stale output:</strong> <code>continue_execution</code> returns <code>console_line_count</code>. Pass it as <code>from_line</code> to <code>wait_for_output</code> to only match output printed after the resume.
+    </div>
+  </div>
+</section>
+
+<!-- ── Workflow ── -->
+<section class="section-narrow" id="workflow">
+  <h2>Recommended AI workflow</h2>
+  <div class="workflow-steps">
+    <div class="workflow-step">
+      <div class="step-num">1</div>
+      <div class="step-body">
+        <h3>Orient</h3>
+        <p>Always start with <code>get_debug_context</code> — paused location, locals, call stack, and a source window in a single call. Never guess from source alone.</p>
+      </div>
+    </div>
+    <div class="workflow-step">
+      <div class="step-num">2</div>
+      <div class="step-body">
+        <h3>Read back what you already know</h3>
+        <p>Call <code>get_annotations</code> and <code>get_findings</code> at session start — avoids re-investigating lines you've already marked and re-stating conclusions you've already recorded.</p>
+      </div>
+    </div>
+    <div class="workflow-step">
+      <div class="step-num">3</div>
+      <div class="step-body">
+        <h3>Inspect &amp; evaluate</h3>
+        <p>Use <code>evaluate</code> to check expressions before stepping — cheaper than advancing line by line. Drill nested variables with <code>get_variables</code> recursively.</p>
+      </div>
+    </div>
+    <div class="workflow-step">
+      <div class="step-num">4</div>
+      <div class="step-body">
+        <h3>Step (blocking)</h3>
+        <p>Chain <code>step_over</code> calls freely — each one waits for the adapter to pause. Follow with <code>get_debug_context</code> to re-orient.</p>
+      </div>
+    </div>
+    <div class="workflow-step">
+      <div class="step-num">5</div>
+      <div class="step-body">
+        <h3>Continue &amp; wait for output</h3>
+        <p>Grab <code>console_line_count</code> from <code>continue_execution</code>, then pass it as <code>from_line</code> to <code>wait_for_output</code> — only output printed after the resume is matched.</p>
+      </div>
+    </div>
+    <div class="workflow-step">
+      <div class="step-num">6</div>
+      <div class="step-body">
+        <h3>Trace history</h3>
+        <p>Use <code>get_variable_history("x")</code> to see every value a variable held across all stops. Use <code>get_timeline</code> to see which variables changed at each one.</p>
+      </div>
+    </div>
+    <div class="workflow-step">
+      <div class="step-num">7</div>
+      <div class="step-body">
+        <h3>Record conclusions</h3>
+        <p>Pin findings with <code>annotate</code> and <code>add_finding</code> — the human sees them immediately in the UI, and you can read them back on the next invocation.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Setup ── -->
+<section class="section-narrow">
+  <h2>Quick setup</h2>
+  <div class="setup-grid">
+    <div class="setup-card">
+      <h3>1. Add <code>.mcp.json</code> to your project</h3>
+      <div class="code-block">{
+  <span class="s">"mcpServers"</span>: {
+    <span class="s">"debugium"</span>: {
+      <span class="s">"command"</span>: <span class="s">"debugium"</span>,
+      <span class="s">"args"</span>: [<span class="s">"mcp"</span>]
+    }
+  }
+}</div>
+    </div>
+    <div class="setup-card">
+      <h3>2. Launch a session</h3>
+      <div class="code-block"><span class="c"># Python</span>
+debugium launch app.py \
+  --adapter python \
+  --breakpoint /abs/path/app.py:42
+
+<span class="c"># Rust</span>
+cargo build
+debugium launch ./target/debug/app \
+  --adapter lldb \
+  --breakpoint /abs/path/src/main.rs:60</div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Keyboard shortcuts ── -->
+<section class="section-narrow">
+  <h2>Keyboard shortcuts</h2>
+  <div class="kb-grid">
+    <div class="kb-item"><span class="key">F5</span> Continue</div>
+    <div class="kb-item"><span class="key">F10</span> Step Over</div>
+    <div class="kb-item"><span class="key">F11</span> Step Into</div>
+    <div class="kb-item"><span class="key">Shift+F11</span> Step Out</div>
+    <div class="kb-item"><span class="key">Ctrl+D</span> Toggle dark mode</div>
+  </div>
 </section>
 
 <footer>
-  <p>Built with Rust · Leptos · CodeMirror 6 · DAP</p>
+  <p>Built with Rust · Leptos · CodeMirror 6 · DAP · MCP</p>
   <p style="margin-top:.5rem"><a href="https://github.com/Algiras/debugium">github.com/Algiras/debugium</a> · MIT License</p>
 </footer>
 
+<script>
+  function showTab(id, btn) {
+    document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+    btn.classList.add('active');
+  }
+</script>
 </body>
 </html>
