@@ -61,10 +61,12 @@ mv "$TMP/debugium" "$INSTALL_DIR/debugium"
 chmod +x "$INSTALL_DIR/debugium"
 
 # ── Install dist assets ───────────────────────────────────────────────────────
+# The tarball nests dist under crates/debugium-ui/dist/
 ASSETS_DIR="${DEBUGIUM_ASSETS_DIR:-$HOME/.debugium/dist}"
-if [ -d "$TMP/dist" ]; then
+DIST_SRC="$TMP/crates/debugium-ui/dist"
+if [ -d "$DIST_SRC" ]; then
   mkdir -p "$ASSETS_DIR"
-  cp -r "$TMP/dist/." "$ASSETS_DIR/"
+  cp -r "$DIST_SRC/." "$ASSETS_DIR/"
   echo "UI assets installed to: $ASSETS_DIR"
 fi
 
