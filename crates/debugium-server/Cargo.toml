@@ -28,6 +28,7 @@ dirs = "5"
 glob = "0.3"
 reqwest = { version = "0.12", features = ["json"] }
 regex = "1"
+libc = "0.2"
 
 [dev-dependencies]
 dirs = "5"
