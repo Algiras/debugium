@@ -48,6 +48,34 @@ fn target_py() -> PathBuf {
         .expect("target_python.py not found")
 }
 
+/// Returns true if debugpy is available. Tests that need a live debug session
+/// should call this and return early when false (e.g. Windows CI without debugpy).
+fn has_debugpy() -> bool {
+    Command::new("python3")
+        .args(["-c", "import debugpy"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .or_else(|_| {
+            Command::new("python")
+                .args(["-c", "import debugpy"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+        })
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+macro_rules! require_debugpy {
+    () => {
+        if !has_debugpy() {
+            eprintln!("SKIP: debugpy not available");
+            return;
+        }
+    };
+}
+
 fn target_threads_py() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/target_threads.py")
@@ -564,6 +592,7 @@ fn n3_mcp_help_default_port_7331() {
 
 #[test]
 fn e1_set_breakpoints_verified() {
+    require_debugpy!();
     let srv = ServerGuard::launch(7361, Some(43), None);
     assert!(srv.wait_up(12), "server never started on port 7361");
     assert!(srv.wait_paused(12), "session never paused on port 7361");
@@ -585,6 +614,7 @@ fn e1_set_breakpoints_verified() {
 
 #[test]
 fn e2_list_breakpoints_after_set() {
+    require_debugpy!();
     let srv = ServerGuard::launch(7362, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
@@ -604,6 +634,7 @@ fn e2_list_breakpoints_after_set() {
 
 #[test]
 fn e3_set_breakpoints_with_condition() {
+    require_debugpy!();
     let srv = ServerGuard::launch(7363, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
@@ -624,6 +655,7 @@ fn e3_set_breakpoints_with_condition() {
 
 #[test]
 fn e4_clear_breakpoints_empties_list() {
+    require_debugpy!();
     let srv = ServerGuard::launch(7364, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
@@ -647,6 +679,7 @@ fn e4_clear_breakpoints_empties_list() {
 
 #[test]
 fn e5_set_function_breakpoints() {
+    require_debugpy!();
     let srv = ServerGuard::launch(7365, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
@@ -663,6 +696,7 @@ fn e5_set_function_breakpoints() {
 
 #[test]
 fn e6_set_exception_breakpoints() {
+    require_debugpy!();
     let srv = ServerGuard::launch(7366, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
@@ -681,6 +715,7 @@ fn e6_set_exception_breakpoints() {
 
 #[test]
 fn f1_get_threads_returns_main_thread() {
+    require_debugpy!();
     let srv = ServerGuard::launch(7371, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
@@ -699,6 +734,7 @@ fn f1_get_threads_returns_main_thread() {
 
 #[test]
 fn f2_get_stack_trace_shows_line_43() {
+    require_debugpy!();
     let srv = ServerGuard::launch(7372, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
@@ -718,6 +754,7 @@ fn f2_get_stack_trace_shows_line_43() {
 
 #[test]
 fn f5_evaluate_simple_expression() {
+    require_debugpy!();
     let srv = ServerGuard::launch(7375, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
@@ -736,6 +773,7 @@ fn f5_evaluate_simple_expression() {
 
 #[test]
 fn f6_get_capabilities_returns_data() {
+    require_debugpy!();
     let srv = ServerGuard::launch(7376, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
@@ -751,6 +789,7 @@ fn f6_get_capabilities_returns_data() {
 
 #[test]
 fn f7_get_source_full_file_at_least_60_lines() {
+    require_debugpy!();
     let srv = ServerGuard::launch(7377, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
@@ -773,6 +812,7 @@ fn f7_get_source_full_file_at_least_60_lines() {
 
 #[test]
 fn f8_get_source_around_line_43_has_marker() {
+    require_debugpy!();
     let srv = ServerGuard::launch(7378, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
@@ -798,6 +838,7 @@ fn f8_get_source_around_line_43_has_marker() {
 /// port conflicts and state issues.
 #[test]
 fn g_execution_control_sequential() {
+    require_debugpy!();
     let srv = ServerGuard::launch(7380, Some(43), Some(49));
     assert!(srv.wait_up(12), "server never started");
     assert!(srv.wait_paused(12), "session never paused");
@@ -857,6 +898,7 @@ fn g_execution_control_sequential() {
 
 #[test]
 fn h1_get_debug_context_all_keys_present() {
+    require_debugpy!();
     let srv = ServerGuard::launch(7381, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
@@ -874,6 +916,7 @@ fn h1_get_debug_context_all_keys_present() {
 
 #[test]
 fn h2_get_debug_context_compact() {
+    require_debugpy!();
     let srv = ServerGuard::launch(7382, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
@@ -896,6 +939,7 @@ fn h2_get_debug_context_compact() {
 
 #[test]
 fn h3_annotate_ok() {
+    require_debugpy!();
     let srv = ServerGuard::launch(7383, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
@@ -917,6 +961,7 @@ fn h3_annotate_ok() {
 
 #[test]
 fn h4_add_finding_ok() {
+    require_debugpy!();
     let srv = ServerGuard::launch(7384, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
@@ -934,6 +979,7 @@ fn h4_add_finding_ok() {
 
 #[test]
 fn h5_step_until_condition() {
+    require_debugpy!();
     let srv = ServerGuard::launch(7385, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
@@ -952,6 +998,7 @@ fn h5_step_until_condition() {
 
 #[test]
 fn h6_list_sessions_enriched() {
+    require_debugpy!();
     let srv = ServerGuard::launch(7386, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
@@ -976,6 +1023,7 @@ fn h6_list_sessions_enriched() {
 
 #[test]
 fn i1_get_exception_info_not_on_exception_handled() {
+    require_debugpy!();
     let srv = ServerGuard::launch(7391, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
@@ -990,6 +1038,7 @@ fn i1_get_exception_info_not_on_exception_handled() {
 
 #[test]
 fn i2_set_variable_handled() {
+    require_debugpy!();
     let srv = ServerGuard::launch(7392, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
@@ -1081,6 +1130,7 @@ fn i3_run_until_exception_catches_exception() {
 
 #[test]
 fn i4_disconnect_terminate_false() {
+    require_debugpy!();
     let srv = ServerGuard::launch(7394, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
@@ -1097,6 +1147,7 @@ fn i4_disconnect_terminate_false() {
 
 #[test]
 fn m1_launch_fixed_port_http_200() {
+    require_debugpy!();
     let srv = ServerGuard::launch(7351, None, None);
     assert!(srv.wait_up(12), "server never started on port 7351");
     let body = http_get(7351, "/sessions").expect("/sessions failed");
@@ -1105,6 +1156,7 @@ fn m1_launch_fixed_port_http_200() {
 
 #[test]
 fn m3_launch_with_breakpoint_pauses() {
+    require_debugpy!();
     let srv = ServerGuard::launch(7352, Some(43), None);
     assert!(srv.wait_up(12), "server never started");
     assert!(srv.wait_paused(12), "session never paused");
@@ -1115,6 +1167,7 @@ fn m3_launch_with_breakpoint_pauses() {
 
 #[test]
 fn m4_multiple_breakpoints_both_set() {
+    require_debugpy!();
     let srv = ServerGuard::launch(7353, Some(43), Some(49));
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
@@ -1125,6 +1178,7 @@ fn m4_multiple_breakpoints_both_set() {
 
 #[test]
 fn m6_port_file_written() {
+    require_debugpy!();
     let srv = ServerGuard::launch(7355, None, None);
     assert!(srv.wait_up(12));
     let port_file = dirs::home_dir()
@@ -1143,6 +1197,7 @@ fn m6_port_file_written() {
 
 #[test]
 fn n2_mcp_proxy_with_live_server_get_sessions() {
+    require_debugpy!();
     let srv = ServerGuard::launch(7356, None, None);
     assert!(srv.wait_up(12));
 
@@ -1217,6 +1272,7 @@ fn o1_launch_mcp_flag_stdio_and_http() {
 #[test]
 fn t1_get_stack_trace_auto_detects_paused_thread() {
     let target = target_threads_py();
+    require_debugpy!();
     let srv = ServerGuard::launch_with_target(7401, target, 6);
     assert!(srv.wait_up(15), "T1 server never started");
     assert!(srv.wait_paused(15), "T1 never paused at breakpoint");
@@ -1239,6 +1295,7 @@ fn t1_get_stack_trace_auto_detects_paused_thread() {
 #[test]
 fn t2_get_threads_returns_thread_list() {
     let target = target_threads_py();
+    require_debugpy!();
     let srv = ServerGuard::launch_with_target(7402, target, 6);
     assert!(srv.wait_up(15), "T2 server never started");
     assert!(srv.wait_paused(15), "T2 never paused");
@@ -1260,6 +1317,7 @@ fn t2_get_threads_returns_thread_list() {
 #[test]
 fn t3_evaluate_auto_resolves_frame_via_paused_thread() {
     let target = target_threads_py();
+    require_debugpy!();
     let srv = ServerGuard::launch_with_target(7403, target, 6);
     assert!(srv.wait_up(15), "T3 server never started");
     assert!(srv.wait_paused(15), "T3 never paused");
@@ -1286,6 +1344,7 @@ fn t3_evaluate_auto_resolves_frame_via_paused_thread() {
 #[test]
 fn t4_get_debug_context_auto_detects_thread() {
     let target = target_threads_py();
+    require_debugpy!();
     let srv = ServerGuard::launch_with_target(7404, target, 6);
     assert!(srv.wait_up(15), "T4 server never started");
     assert!(srv.wait_paused(15), "T4 never paused");
@@ -1322,6 +1381,7 @@ fn t4_get_debug_context_auto_detects_thread() {
 fn u1_subprocess_child_pauses_in_parent_session() {
     let target = target_subprocess_py();
     // No breakpoint in the parent — the child's breakpoint() will trigger a stop.
+    require_debugpy!();
     let srv = ServerGuard::launch_with_target(7411, target, 0);
     assert!(srv.wait_up(15), "U1 server never started");
     // Child attach + pause is async — give it more time than normal tests.
@@ -1334,6 +1394,7 @@ fn u1_subprocess_child_pauses_in_parent_session() {
 #[test]
 fn u2_parent_stack_shows_subprocess_call() {
     let target = target_subprocess_py();
+    require_debugpy!();
     let srv = ServerGuard::launch_with_target(7412, target, 0);
     assert!(srv.wait_up(15), "U2 server never started");
     assert!(wait_paused(7412, 25), "U2 session never paused");
@@ -1357,6 +1418,7 @@ fn u2_parent_stack_shows_subprocess_call() {
 #[test]
 fn u3_get_threads_while_child_paused() {
     let target = target_subprocess_py();
+    require_debugpy!();
     let srv = ServerGuard::launch_with_target(7413, target, 0);
     assert!(srv.wait_up(15), "U3 server never started");
     assert!(wait_paused(7413, 25), "U3 session never paused");
@@ -1380,6 +1442,7 @@ fn u3_get_threads_while_child_paused() {
 /// V1: annotate a line, then get_annotations returns it.
 #[test]
 fn v1_get_annotations_after_annotate() {
+    require_debugpy!();
     let srv = ServerGuard::launch(7421, Some(43), None);
     assert!(srv.wait_up(12), "V1 server never started");
     assert!(srv.wait_paused(12), "V1 session never paused");
@@ -1403,6 +1466,7 @@ fn v1_get_annotations_after_annotate() {
 /// V2: add_finding, then get_findings returns it.
 #[test]
 fn v2_get_findings_after_add_finding() {
+    require_debugpy!();
     let srv = ServerGuard::launch(7422, Some(43), None);
     assert!(srv.wait_up(12), "V2 server never started");
     assert!(srv.wait_paused(12), "V2 session never paused");
@@ -1424,6 +1488,7 @@ fn v2_get_findings_after_add_finding() {
 /// V3: step a few times, then get_variable_history returns history (may be empty if var not in scope).
 #[test]
 fn v3_get_variable_history_tracks_variable() {
+    require_debugpy!();
     let srv = ServerGuard::launch(7423, Some(43), None);
     assert!(srv.wait_up(12), "V3 server never started");
     assert!(srv.wait_paused(12), "V3 session never paused");
@@ -1450,6 +1515,7 @@ fn v3_get_variable_history_tracks_variable() {
 /// V4: wait_for_output with a pattern that should already be in console output (or times out gracefully).
 #[test]
 fn v4_wait_for_output_returns_result() {
+    require_debugpy!();
     let srv = ServerGuard::launch(7424, Some(43), None);
     assert!(srv.wait_up(12), "V4 server never started");
     assert!(srv.wait_paused(12), "V4 session never paused");

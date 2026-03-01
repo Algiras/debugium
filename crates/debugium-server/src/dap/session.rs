@@ -213,6 +213,7 @@ impl Session {
                 let stopped_s = stopped_tx.clone();
                 let last_s = last_stopped_arc.clone();
                 let sd_tx_s = sd_tx.clone();
+                let session_for_bps = session.clone();
                 tokio::spawn(async move {
                     while let Some(cfg) = sd_rx.recv().await {
                         let h = hub_s.clone();
@@ -220,6 +221,8 @@ impl Session {
                         let st = stopped_s.clone();
                         let ls = last_s.clone();
                         let sd = sd_tx_s.clone();
+                        // Snapshot parent breakpoints to forward to child session
+                        let bps = session_for_bps.breakpoints.read().await.clone();
                         // Determine the TCP port for the child session:
                         //  1. js-debug adapters: use the known TCP port.
                         //  2. Generic DAP 1.51+ adapters: the startDebugging config may
@@ -229,7 +232,7 @@ impl Session {
                         });
                         if let Some(port) = port_opt {
                             tokio::spawn(async move {
-                                if let Err(e) = attach_child_session(port, cfg, h, s, st, ls, sd).await {
+                                if let Err(e) = attach_child_session(port, cfg, h, s, st, ls, sd, bps).await {
                                     warn!("child session error: {e}");
                                 }
                             });
@@ -522,6 +525,83 @@ impl Session {
         Ok(())
     }
 
+    /// DAP handshake for attach mode (remote debug servers):
+    ///   attach → wait for `initialized` → setBreakpoints → setExceptionBreakpoints → configurationDone
+    pub async fn configure_and_attach(
+        &self,
+        program: PathBuf,
+        cwd: PathBuf,
+        breakpoints: &[(String, Vec<u32>)],
+        exception_filters: Option<&[String]>,
+    ) -> Result<()> {
+        // Populate session metadata
+        let adapter_id = self.adapter.adapter_id().to_string();
+        let adapter_pid = self.adapter.process.as_ref().map(|p| p.pid);
+        let meta = SessionMeta {
+            program: program.clone(),
+            adapter_id: adapter_id.clone(),
+            adapter_pid,
+            cwd: cwd.clone(),
+            started_at: chrono::Utc::now(),
+            port: 0,
+        };
+        *self.meta.write().await = Some(meta.clone());
+
+        if let Ok(home) = DebugiumHome::open() {
+            if let Ok(session_dir) = home.ensure_session_dir(&self.id) {
+                let info_path = session_dir.join("info.json");
+                if let Ok(json) = serde_json::to_string_pretty(&meta) {
+                    tokio::fs::write(&info_path, json).await.ok();
+                }
+            }
+        }
+
+        // 1. attach — fire and forget (response arrives after configurationDone)
+        let attach_args = self.adapter.launch_args(&program, &cwd);
+        self.client.notify("attach", Some(attach_args)).await?;
+
+        // 2. wait for `initialized` event
+        let mut guard = self.initialized_rx.lock().await;
+        if let Some(rx) = guard.take() {
+            tokio::time::timeout(tokio::time::Duration::from_secs(10), rx)
+                .await
+                .map_err(|_| anyhow::anyhow!("Timed out waiting for initialized event"))?
+                .map_err(|_| anyhow::anyhow!("initialized channel closed"))?;
+        }
+        drop(guard);
+
+        // 3. setBreakpoints
+        for (file, lines) in breakpoints {
+            if let Err(e) = self.set_breakpoints(file, lines.clone()).await {
+                warn!("setBreakpoints {file}: {e}");
+            }
+        }
+
+        // 4. setExceptionBreakpoints — use provided filters or fall back to capability check
+        let filters = if let Some(f) = exception_filters {
+            f.to_vec()
+        } else {
+            let has_exc_filters = self.capabilities.read().await
+                .get("exceptionBreakpointFilters")
+                .and_then(Value::as_array)
+                .map(|a| !a.is_empty())
+                .unwrap_or(false);
+            if has_exc_filters { vec!["uncaught".to_string()] } else { vec![] }
+        };
+        if !filters.is_empty() {
+            if let Err(e) = self.client.request("setExceptionBreakpoints", Some(serde_json::json!({
+                "filters": filters
+            }))).await {
+                warn!("setExceptionBreakpoints: {e}");
+            }
+        }
+
+        // 5. configurationDone
+        self.client.request("configurationDone", None).await?;
+        info!("[{}] attach configuration done", self.id);
+        Ok(())
+    }
+
     /// Return the stored adapter capabilities.
     pub async fn get_capabilities(&self) -> Value {
         self.capabilities.read().await.clone()
@@ -584,23 +664,27 @@ impl Session {
             }).collect::<Vec<_>>()
         });
         let resp = self.client.request("setBreakpoints", Some(args)).await?;
-        // Extract verified lines from the DAP response, preserve conditions from input specs
-        let verified: Vec<BpSpec> = resp.get("body")
+        // Extract lines from DAP response, falling back to input specs when the adapter
+        // doesn't echo back a line (e.g. js-debug returns provisional breakpoints without
+        // a line field).
+        let result: Vec<BpSpec> = resp.get("body")
             .and_then(|b| b.get("breakpoints"))
             .and_then(Value::as_array)
-            .map(|arr| arr.iter()
-                .filter_map(|b| {
-                    let line = b.get("line").and_then(Value::as_u64).map(|l| l as u32)?;
+            .map(|arr| arr.iter().enumerate()
+                .filter_map(|(i, b)| {
+                    // Use line from response, or fall back to the input spec at same index
+                    let line = b.get("line").and_then(Value::as_u64).map(|l| l as u32)
+                        .or_else(|| specs.get(i).map(|s| s.line))?;
                     let condition = specs.iter().find(|s| s.line == line).and_then(|s| s.condition.clone());
                     Some(BpSpec { line, condition })
                 })
                 .collect())
             .unwrap_or_else(|| specs.clone());
         let mut bps = self.breakpoints.write().await;
-        if verified.is_empty() {
+        if result.is_empty() {
             bps.remove(file);
         } else {
-            bps.insert(file.to_string(), verified);
+            bps.insert(file.to_string(), result);
         }
         Ok(resp)
     }
@@ -621,6 +705,8 @@ async fn attach_child_session(
     last_stopped: Arc<RwLock<Option<Value>>>,
     // Shared work-queue: push child configs here when startDebugging arrives.
     sd_tx: mpsc::Sender<Value>,
+    // Parent session's breakpoints to forward to the child session.
+    parent_breakpoints: HashMap<String, Vec<BpSpec>>,
 ) -> Result<()> {
     let pending_id = child_config["__pendingTargetId"]
         .as_str().unwrap_or("?").to_string();
@@ -661,6 +747,24 @@ async fn attach_child_session(
     // 3. launch the child session with the configuration forwarded from startDebugging
     child_client.notify("launch", Some(child_config.clone())).await
         .context("child launch")?;
+
+    // 3b. Forward parent breakpoints to the child session so they bind in the child process.
+    info!("[{session_id}] Forwarding {} breakpoint file(s) to child session", parent_breakpoints.len());
+    for (file, specs) in &parent_breakpoints {
+        let bp_args = serde_json::json!({
+            "source": { "path": file },
+            "breakpoints": specs.iter().map(|s| {
+                let mut obj = serde_json::json!({ "line": s.line });
+                if let Some(cond) = &s.condition {
+                    obj["condition"] = Value::String(cond.clone());
+                }
+                obj
+            }).collect::<Vec<Value>>()
+        });
+        if let Err(e) = child_client.request("setBreakpoints", Some(bp_args)).await {
+            warn!("[{session_id}] child setBreakpoints for {file}: {e}");
+        }
+    }
 
     // Send setExceptionBreakpoints before configurationDone (mirrors what VS Code sends).
     child_client.notify("setExceptionBreakpoints", Some(serde_json::json!({

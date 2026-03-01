@@ -2,7 +2,7 @@
 
 **A multi-language debugger with a real-time web UI and LLM integration via MCP.**
 
-Debug Python, JavaScript/TypeScript, and Rust programs from your browser — with AI-driven analysis through the [Model Context Protocol](https://modelcontextprotocol.io/).
+Debug Python, JavaScript, TypeScript, C, C++, Rust, Java, Scala, and WebAssembly programs from your browser — with AI-driven analysis through the [Model Context Protocol](https://modelcontextprotocol.io/).
 
 [![CI](https://github.com/Algiras/debugium/actions/workflows/ci.yml/badge.svg)](https://github.com/Algiras/debugium/actions/workflows/ci.yml)
 [![Docs](https://img.shields.io/badge/docs-algiras.github.io%2Fdebugium-blue)](https://algiras.github.io/debugium)
@@ -14,7 +14,7 @@ Debug Python, JavaScript/TypeScript, and Rust programs from your browser — wit
 ## Features
 
 - **Real-time web UI** — source viewer, breakpoints, variables, call stack, console, timeline, watch expressions, findings
-- **Multi-language** — Python (debugpy), Node/TypeScript (js-debug), Rust (lldb-dap)
+- **Multi-language** — Python (debugpy), Node.js/TypeScript (js-debug), C/C++/Rust (lldb-dap), Java (java-debug), Scala (Metals), WebAssembly (lldb-dap), or any DAP adapter via `dap.json`
 - **MCP integration** — 40+ tools exposing the full debug session to Claude or any LLM
 - **Multi-session** — debug multiple programs simultaneously
 - **Execution timeline** — every stop recorded with changed variables and stack summary
@@ -76,15 +76,39 @@ debugium launch my_script.py --adapter python
 
 ```bash
 debugium launch app.js --adapter node
-# TypeScript (compiled):
-debugium launch dist/app.js --adapter node
+debugium launch app.ts --adapter typescript
 ```
 
-### Debug a Rust binary
+### Debug C / C++ / Rust
 
 ```bash
-cargo build
-debugium launch target/debug/my_binary --adapter lldb
+# C or C++ (compile with -g for debug info)
+cc -g -O0 main.c -o main && debugium launch ./main --adapter lldb
+c++ -g -O0 main.cpp -o main && debugium launch ./main --adapter lldb
+
+# Rust
+cargo build && debugium launch target/debug/my_binary --adapter lldb
+```
+
+### Debug Java / Scala
+
+```bash
+# Java (requires microsoft/java-debug adapter)
+debugium launch MainClass --adapter java
+
+# Scala (connect to a running Metals DAP server)
+debugium launch build-target --adapter metals
+debugium launch build-target --adapter metals:5005  # custom port
+```
+
+### Use a custom adapter via dap.json
+
+```bash
+# Create a dap.json (see dap.json.example) then:
+debugium launch my_program --config ./dap.json
+
+# Or place dap.json in cwd / .debugium/ for auto-discovery:
+debugium launch my_program   # finds ./dap.json automatically
 ```
 
 ### Set initial breakpoints
@@ -240,7 +264,7 @@ See [SKILL.md](SKILL.md) for the full reference with input schemas.
 
 ```
 debugium-server (Axum)
-├── DAP proxy — spawns / connects to debug adapters (debugpy, lldb-dap, js-debug)
+├── DAP proxy — spawns / connects to debug adapters (debugpy, js-debug, lldb-dap, java-debug, Metals, custom)
 ├── HTTP API  — /state, /dap, /sessions, /annotations, /findings
 ├── WebSocket — broadcasts DAP events to the UI in real-time
 └── MCP stdio — JSON-RPC 2.0 server for LLM tool integration
@@ -253,13 +277,37 @@ debugium-ui (Leptos + WASM)
 
 ---
 
-## Requirements
+## Supported Languages & Adapters
 
-| Adapter | Requirement |
-|---------|-------------|
-| Python  | `pip install debugpy` |
-| Node.js | `js-debug` (bundled or `npm install -g @vscode/js-debug`) |
-| Rust    | `lldb-dap` (installed with `lldb` / Xcode on macOS; `apt install lldb` on Linux) |
+| Language | `--adapter` flag | Prerequisite | Verified |
+|----------|-----------------|--------------|----------|
+| Python | `python` / `debugpy` | `pip install debugpy` | ✅ |
+| Node.js | `node` / `js` | js-debug (bundled or build from [vscode-js-debug](https://github.com/nicolo-ribaudo/nicolo-ribaudo-js-debug)) | ✅ |
+| TypeScript | `typescript` / `ts` / `tsx` | js-debug + `tsx` or `ts-node` in PATH | ✅ |
+| C / C++ | `lldb` / `codelldb` | `lldb-dap` (Xcode on macOS; `apt install lldb` on Linux) | ✅ |
+| Rust | `lldb` / `rust` | `lldb-dap` + `cargo build` | ✅ |
+| Java | `java` / `jvm` | [microsoft/java-debug](https://github.com/nicolo-ribaudo/nicolo-ribaudo-java-debug) adapter JAR | ✅ |
+| Scala | `metals` / `scala` | Running [Metals](https://scalameta.org/metals/) DAP server | ⚠️ (requires running Metals) |
+| WebAssembly | `wasm` | `lldb-dap` (LLVM ≥16) | ⚠️ (requires WASM-aware LLVM) |
+| Any DAP adapter | `--config dap.json` | See `dap.json.example` | ✅ |
+
+### Remote debugging
+
+Connect to a DAP server running on another machine (or in a container):
+
+```json
+{
+  "adapterId": "debugpy",
+  "request": "attach",
+  "host": "192.168.1.100",
+  "port": 5678,
+  "pathMappings": [{ "localRoot": ".", "remoteRoot": "/app" }]
+}
+```
+
+```bash
+debugium launch app.py --config remote.json
+```
 
 ---
 

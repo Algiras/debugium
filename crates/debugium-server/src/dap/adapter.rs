@@ -6,23 +6,49 @@ use serde_json::{json, Value};
 use tokio::process::{Child, Command};
 
 /// Configuration loaded from a `dap.json` file.
-/// The file format is:
-/// ```json
-/// {
-///   "command": ["path/to/adapter", "--arg"],
-///   "launch": { "type": "...", "request": "launch", ... }
-/// }
-/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DapConfig {
-    /// Adapter executable + arguments.
-    pub command: Vec<String>,
-    /// Launch (or attach) arguments forwarded verbatim to the adapter.
+    /// Adapter executable + arguments. None for remote attach mode.
+    pub command: Option<Vec<String>>,
+    /// Launch arguments forwarded verbatim to the adapter.
     pub launch: Value,
+    /// Attach-mode arguments (alternative to launch).
+    pub attach: Option<Value>,
+    /// "launch" or "attach" (default "launch").
+    pub request: String,
     /// Adapter type identifier used in `initialize`.
     pub adapter_id: String,
     /// Whether this adapter speaks TCP after spawn (like js-debug). Default false.
     pub tcp_after_spawn: bool,
+    /// Remote DAP server host (for attach-to-running-server mode).
+    pub host: Option<String>,
+    /// Remote DAP server port.
+    pub port: Option<u16>,
+    /// Environment variables merged into launch/attach args.
+    pub env: Option<Value>,
+    /// Debuggee CLI arguments.
+    pub args: Option<Vec<String>>,
+    /// Human-readable config name.
+    pub name: Option<String>,
+    /// Stop on entry.
+    pub stop_on_entry: Option<bool>,
+    /// Python: just my code.
+    pub just_my_code: Option<bool>,
+    /// Node/TS: file patterns to skip.
+    pub skip_files: Option<Vec<String>>,
+    /// Node/TS: enable source maps.
+    pub source_maps: Option<bool>,
+    /// Local↔remote path mapping for containers.
+    pub path_mappings: Option<Value>,
+    /// Exception breakpoint filter IDs e.g. ["uncaught"].
+    pub exception_breakpoints: Option<Vec<String>>,
+    /// Initial breakpoints: [{file, line, condition?}].
+    pub breakpoints: Option<Vec<Value>>,
+}
+
+/// Helper: try camelCase key first, then snake_case.
+fn get_field<'a>(v: &'a Value, camel: &str, snake: &str) -> Option<&'a Value> {
+    v.get(camel).or_else(|| v.get(snake))
 }
 
 impl DapConfig {
@@ -32,26 +58,90 @@ impl DapConfig {
             .map_err(|e| anyhow::anyhow!("cannot read dap.json at {}: {e}", path.display()))?;
         let v: Value = serde_json::from_str(&raw)
             .map_err(|e| anyhow::anyhow!("invalid dap.json: {e}"))?;
-        let command: Vec<String> = v["command"]
-            .as_array()
-            .ok_or_else(|| anyhow::anyhow!("dap.json: \"command\" must be an array"))?
-            .iter()
-            .filter_map(|s| s.as_str().map(str::to_string))
-            .collect();
-        if command.is_empty() {
-            anyhow::bail!("dap.json: \"command\" array is empty");
+
+        // command is now optional (not needed for remote attach)
+        let command: Option<Vec<String>> = v.get("command")
+            .and_then(Value::as_array)
+            .map(|arr| arr.iter().filter_map(|s| s.as_str().map(str::to_string)).collect());
+
+        let host = v.get("host").and_then(Value::as_str).map(str::to_string);
+        let port = v.get("port").and_then(Value::as_u64).map(|p| p as u16);
+
+        // Validate: either command or host+port must be present
+        if command.is_none() && (host.is_none() || port.is_none()) {
+            anyhow::bail!("dap.json: must provide either \"command\" or both \"host\" and \"port\"");
         }
+        if let Some(ref cmd) = command {
+            if cmd.is_empty() {
+                anyhow::bail!("dap.json: \"command\" array is empty");
+            }
+        }
+
         let launch = v.get("launch").cloned().unwrap_or(Value::Null);
-        let adapter_id = v.get("adapterId")
-            .or_else(|| v.get("adapter_id"))
+        let attach = v.get("attach").cloned();
+
+        // Default request to "attach" if host+port present or attach block exists, else "launch"
+        let request = v.get("request").and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                if host.is_some() || attach.is_some() { "attach".to_string() } else { "launch".to_string() }
+            });
+
+        let adapter_id = get_field(&v, "adapterId", "adapter_id")
             .and_then(Value::as_str)
             .unwrap_or("custom")
             .to_string();
-        let tcp_after_spawn = v.get("tcpAfterSpawn")
-            .or_else(|| v.get("tcp_after_spawn"))
+
+        let tcp_after_spawn = get_field(&v, "tcpAfterSpawn", "tcp_after_spawn")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        Ok(DapConfig { command, launch, adapter_id, tcp_after_spawn })
+
+        let env = v.get("env").cloned();
+
+        let args = v.get("args")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect());
+
+        let name = v.get("name").and_then(Value::as_str).map(str::to_string);
+
+        let stop_on_entry = get_field(&v, "stopOnEntry", "stop_on_entry")
+            .and_then(Value::as_bool);
+
+        let just_my_code = get_field(&v, "justMyCode", "just_my_code")
+            .and_then(Value::as_bool);
+
+        let skip_files = get_field(&v, "skipFiles", "skip_files")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect());
+
+        let source_maps = get_field(&v, "sourceMaps", "source_maps")
+            .and_then(Value::as_bool);
+
+        let path_mappings = get_field(&v, "pathMappings", "path_mappings").cloned();
+
+        let exception_breakpoints = get_field(&v, "exceptionBreakpoints", "exception_breakpoints")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect());
+
+        let breakpoints = v.get("breakpoints")
+            .and_then(Value::as_array)
+            .cloned();
+
+        Ok(DapConfig {
+            command, launch, attach, request, adapter_id, tcp_after_spawn,
+            host, port, env, args, name, stop_on_entry, just_my_code,
+            skip_files, source_maps, path_mappings, exception_breakpoints, breakpoints,
+        })
+    }
+
+    /// Whether this config uses remote TCP attach (host+port, no local spawn).
+    pub fn is_remote_attach(&self) -> bool {
+        self.host.is_some() && self.port.is_some()
+    }
+
+    /// TCP host for remote attach, defaults to 127.0.0.1.
+    pub fn tcp_host(&self) -> &str {
+        self.host.as_deref().unwrap_or("127.0.0.1")
     }
 }
 
@@ -211,14 +301,16 @@ impl Adapter {
             }
 
             AdapterKind::DapConfig(cfg) => {
-                let (prog, args) = cfg.command.split_first().expect("empty dap.json command");
+                let cmd = cfg.command.as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("DapConfig has no command — use TCP attach mode instead"))?;
+                let (prog, args) = cmd.split_first().expect("empty dap.json command");
                 let child = Command::new(prog)
                     .args(args)
                     .stdin(Stdio::piped())
                     .stdout(Stdio::piped())
                     .stderr(Stdio::inherit())
                     .spawn()?;
-                let argv = cfg.command.join(" ");
+                let argv = cmd.join(" ");
                 (child, argv)
             }
 
@@ -320,22 +412,60 @@ impl Adapter {
             }),
 
             AdapterKind::DapConfig(cfg) => {
-                // Use the launch block from dap.json verbatim; fill in `program` and `cwd`
-                // only if the config doesn't already supply them.
-                let mut launch = cfg.launch.clone();
-                if launch.is_null() {
-                    launch = json!({
-                        "request": "launch",
+                // For attach mode, use the attach block; otherwise use launch block
+                let base = if cfg.request == "attach" {
+                    cfg.attach.clone().unwrap_or(Value::Null)
+                } else {
+                    cfg.launch.clone()
+                };
+
+                let mut args = if base.is_null() {
+                    json!({
+                        "request": cfg.request,
                         "program": program.to_str().unwrap_or(""),
                         "cwd": cwd.to_str().unwrap_or("")
-                    });
+                    })
                 } else {
-                    if let Some(obj) = launch.as_object_mut() {
+                    let mut args = base;
+                    if let Some(obj) = args.as_object_mut() {
+                        obj.entry("request").or_insert_with(|| json!(&cfg.request));
                         obj.entry("program").or_insert_with(|| json!(program.to_str().unwrap_or("")));
                         obj.entry("cwd").or_insert_with(|| json!(cwd.to_str().unwrap_or("")));
                     }
+                    args
+                };
+
+                // Merge optional DapConfig fields into the args object
+                if let Some(obj) = args.as_object_mut() {
+                    if let Some(ref env) = cfg.env {
+                        obj.entry("env").or_insert_with(|| env.clone());
+                    }
+                    if let Some(ref cli_args) = cfg.args {
+                        obj.entry("args").or_insert_with(|| json!(cli_args));
+                    }
+                    if let Some(v) = cfg.stop_on_entry {
+                        obj.entry("stopOnEntry").or_insert_with(|| json!(v));
+                    }
+                    if let Some(v) = cfg.just_my_code {
+                        obj.entry("justMyCode").or_insert_with(|| json!(v));
+                    }
+                    if let Some(ref v) = cfg.skip_files {
+                        obj.entry("skipFiles").or_insert_with(|| json!(v));
+                    }
+                    if let Some(v) = cfg.source_maps {
+                        obj.entry("sourceMaps").or_insert_with(|| json!(v));
+                    }
+                    if let Some(ref v) = cfg.path_mappings {
+                        obj.entry("pathMappings").or_insert_with(|| v.clone());
+                    }
                 }
-                launch
+
+                // Expand ${program} and ${cwd} placeholders in all string values
+                let prog_str = program.to_str().unwrap_or("");
+                let cwd_str = cwd.to_str().unwrap_or("");
+                expand_placeholders(&mut args, prog_str, cwd_str);
+
+                args
             }
 
             AdapterKind::Custom(_) => json!({
@@ -363,7 +493,19 @@ impl Adapter {
 
     /// Whether this adapter connects via TCP rather than spawning a subprocess.
     pub fn is_tcp_attach(&self) -> bool {
-        matches!(self.kind, AdapterKind::Metals { .. })
+        match &self.kind {
+            AdapterKind::Metals { .. } => true,
+            AdapterKind::DapConfig(cfg) => cfg.is_remote_attach(),
+            _ => false,
+        }
+    }
+
+    /// TCP host for attach-mode adapters (defaults to 127.0.0.1).
+    pub fn tcp_host(&self) -> &str {
+        match &self.kind {
+            AdapterKind::DapConfig(cfg) => cfg.tcp_host(),
+            _ => "127.0.0.1",
+        }
     }
 
     /// True for adapters that spawn a TCP server and print the port to stdout
@@ -380,6 +522,7 @@ impl Adapter {
     pub fn tcp_port(&self) -> Option<u16> {
         match &self.kind {
             AdapterKind::Metals { port } => Some(*port),
+            AdapterKind::DapConfig(cfg) => cfg.port,
             _ => None,
         }
     }
@@ -436,6 +579,28 @@ fn find_java_debug_jar() -> PathBuf {
         }
     }
     PathBuf::from("java-debug-adapter.jar")
+}
+
+/// Replace `${program}` and `${cwd}` placeholders in all JSON string values.
+fn expand_placeholders(value: &mut Value, program: &str, cwd: &str) {
+    match value {
+        Value::String(s) => {
+            if s.contains("${program}") || s.contains("${cwd}") {
+                *s = s.replace("${program}", program).replace("${cwd}", cwd);
+            }
+        }
+        Value::Array(arr) => {
+            for item in arr {
+                expand_placeholders(item, program, cwd);
+            }
+        }
+        Value::Object(map) => {
+            for (_, v) in map.iter_mut() {
+                expand_placeholders(v, program, cwd);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn which_cmd(cmd: &str) -> bool {
