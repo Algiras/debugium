@@ -109,7 +109,26 @@ async fn handle_ui_command(cmd: WsCommand, state: &AppState) {
                 Err(e) => warn!("command evaluate failed: {e}"),
             }
         }
-        "setBreakpoints" | "setExceptionBreakpoints" | "setVariable" | "completions"
+        "setBreakpoints" => {
+            // Capture source so we can inject it into the response (DAP responses don't echo it)
+            let source = args.as_ref().and_then(|a| a.get("source")).cloned();
+            match session.client.request(&cmd.command, args).await {
+                Ok(mut resp) => {
+                    if let (Some(src), Some(body)) = (&source, resp.get_mut("body")) {
+                        if let Some(body_obj) = body.as_object_mut() {
+                            body_obj.insert("source".to_string(), src.clone());
+                        }
+                    }
+                    use dap_types::WsEnvelope;
+                    let envelope = WsEnvelope { session_id: cmd.session_id.clone(), msg: resp };
+                    if let Ok(json) = serde_json::to_string(&envelope) {
+                        state.hub.broadcast(&cmd.session_id, json).await;
+                    }
+                }
+                Err(e) => warn!("command setBreakpoints failed: {e}"),
+            }
+        }
+        "setExceptionBreakpoints" | "setVariable" | "completions"
         | "variables" | "scopes" | "stackTrace" => {
             match session.client.request(&cmd.command, args).await {
                 Ok(resp) => {
@@ -359,6 +378,7 @@ pub async fn watches_handler(
 }
 
 // ─── MCP proxy endpoint ──────────────────────────────────────────────────────
+
 
 pub async fn mcp_proxy_handler(
     State(state): State<AppState>,
