@@ -542,6 +542,7 @@ dependencies = [
  "dirs",
  "glob",
  "open",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

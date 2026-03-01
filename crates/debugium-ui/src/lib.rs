@@ -88,6 +88,8 @@ pub struct SessionState {
     pub changed_vars: std::collections::HashSet<String>,
     /// execution timeline (one entry per stopped event)
     pub timeline: Vec<TimelineEntryUi>,
+    /// last LLM query tool + detail, shown in the status bar
+    pub last_llm_query: String,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -548,7 +550,7 @@ pub fn App() -> impl IntoView {
                                         if v.as_deref() == Some(&sid) { *v = None; }
                                     });
                                 });
-                                handle_envelope(env, &sessions, &active_session, &session_data, &cmd_in_flight, &ws_senders_msg, &layout_msg.watches);
+                                handle_envelope(env, &sessions, &active_session, &session_data, &cmd_in_flight, &ws_senders_msg, &layout_msg.watches, &layout_msg.console_collapsed);
                             }
                         }
                     }
@@ -671,6 +673,11 @@ pub fn App() -> impl IntoView {
                     .and_then(|s| s.source_path.map(|p| basename(&p)))
                     .unwrap_or_default()
                 }</span>
+                <span class="status-llm-query">{move || active_session.get()
+                    .and_then(|id| session_data.get().get(&id).cloned())
+                    .map(|s| s.last_llm_query)
+                    .unwrap_or_default()
+                }</span>
             </div>
         </div>
     }
@@ -707,6 +714,7 @@ fn handle_envelope(
     cmd_in_flight: &RwSignal<Option<(String, &'static str)>>,
     ws_senders: &RwSignal<std::collections::HashMap<String, js_sys::Function>>,
     watches: &RwSignal<Vec<String>>,
+    console_collapsed: &RwSignal<bool>,
 ) {
     // Will be set if we need to send a follow-up DAP command after the update
     // (can't borrow data mutably twice in the same closure)
@@ -863,6 +871,23 @@ fn handle_envelope(
                 "invalidated" => {
                     // Adapter requests a data refresh — push a special log entry as a hint.
                     push_log(state, "↺", "Debug data invalidated — refresh pending", "log-response");
+                }
+                "llmQuery" => {
+                    if let Some(b) = msg.get("body") {
+                        let tool   = b.get("tool").and_then(Value::as_str).unwrap_or("?");
+                        let detail = b.get("detail").and_then(Value::as_str).unwrap_or("");
+                        let label = if detail.is_empty() {
+                            format!("[LLM] {tool}")
+                        } else {
+                            format!("[LLM] {tool}({detail})")
+                        };
+                        push_log(state, "🔍", &label, "log-llm-query");
+                        state.last_llm_query = if detail.is_empty() {
+                            format!("🔍 {tool}")
+                        } else {
+                            format!("🔍 {tool}({detail})")
+                        };
+                    }
                 }
                 "annotation_added" => {
                     if let Some(b) = msg.get("body") {
@@ -1100,6 +1125,11 @@ fn handle_envelope(
             _ => {}
         }
     });
+
+    // Auto-expand console when the LLM reads state so the human sees the activity
+    if envelope.msg.get("event").and_then(Value::as_str) == Some("llmQuery") {
+        console_collapsed.set(false);
+    }
 
     // Clear in-flight spinner for any successful response (events already handled above)
     if envelope.msg.get("type").and_then(Value::as_str) == Some("response")

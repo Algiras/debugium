@@ -27,6 +27,7 @@ chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
 glob = "0.3"
 reqwest = { version = "0.12", features = ["json"] }
+regex = "1"
 
 [dev-dependencies]
 # used in integration tests (m6_port_file_written)

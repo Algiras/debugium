@@ -1373,3 +1373,97 @@ fn u3_get_threads_while_child_paused() {
         "U3 expected thread list: {text}"
     );
 }
+
+// ─── Group V: New LLM tools ───────────────────────────────────────────────────
+
+/// V1: annotate a line, then get_annotations returns it.
+#[test]
+fn v1_get_annotations_after_annotate() {
+    let srv = ServerGuard::launch(7421, Some(43), None);
+    assert!(srv.wait_up(12), "V1 server never started");
+    assert!(srv.wait_paused(12), "V1 session never paused");
+
+    let mut p = McpProc::start(7421);
+    p.initialize();
+    p.tool_call("annotate", serde_json::json!({
+        "file": target_py(),
+        "line": 43,
+        "message": "v1 test annotation",
+        "color": "red"
+    }));
+    let r = p.tool_call("get_annotations", serde_json::json!({}));
+    p.stop();
+
+    let text = McpProc::text(&r);
+    assert!(r.get("error").is_none(), "V1 error: {r}");
+    assert!(text.contains("v1 test annotation"), "V1 expected annotation in response: {text}");
+}
+
+/// V2: add_finding, then get_findings returns it.
+#[test]
+fn v2_get_findings_after_add_finding() {
+    let srv = ServerGuard::launch(7422, Some(43), None);
+    assert!(srv.wait_up(12), "V2 server never started");
+    assert!(srv.wait_paused(12), "V2 session never paused");
+
+    let mut p = McpProc::start(7422);
+    p.initialize();
+    p.tool_call("add_finding", serde_json::json!({
+        "message": "v2 test finding",
+        "level": "warning"
+    }));
+    let r = p.tool_call("get_findings", serde_json::json!({}));
+    p.stop();
+
+    let text = McpProc::text(&r);
+    assert!(r.get("error").is_none(), "V2 error: {r}");
+    assert!(text.contains("v2 test finding"), "V2 expected finding in response: {text}");
+}
+
+/// V3: step a few times, then get_variable_history returns history (may be empty if var not in scope).
+#[test]
+fn v3_get_variable_history_tracks_variable() {
+    let srv = ServerGuard::launch(7423, Some(43), None);
+    assert!(srv.wait_up(12), "V3 server never started");
+    assert!(srv.wait_paused(12), "V3 session never paused");
+
+    let mut p = McpProc::start(7423);
+    p.initialize();
+    // Step a few times to build up timeline entries
+    p.tool_call("step_over", serde_json::json!({}));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    p.tool_call("step_over", serde_json::json!({}));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    p.tool_call("step_over", serde_json::json!({}));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let r = p.tool_call("get_variable_history", serde_json::json!({ "name": "fibs" }));
+    p.stop();
+
+    let text = McpProc::text(&r);
+    assert!(r.get("error").is_none(), "V3 error: {r}");
+    // Response must contain "name" and "history" keys
+    assert!(text.contains("\"name\"") && text.contains("\"history\""),
+        "V3 expected name+history keys: {text}");
+}
+
+/// V4: wait_for_output with a pattern that should already be in console output (or times out gracefully).
+#[test]
+fn v4_wait_for_output_returns_result() {
+    let srv = ServerGuard::launch(7424, Some(43), None);
+    assert!(srv.wait_up(12), "V4 server never started");
+    assert!(srv.wait_paused(12), "V4 session never paused");
+
+    let mut p = McpProc::start(7424);
+    p.initialize();
+    // Use a short timeout so the test finishes quickly regardless of match
+    let r = p.tool_call("wait_for_output", serde_json::json!({
+        "pattern": "result",
+        "timeout_secs": 2
+    }));
+    p.stop();
+
+    let text = McpProc::text(&r);
+    assert!(r.get("error").is_none(), "V4 error: {r}");
+    // Must return matched + line fields
+    assert!(text.contains("\"matched\""), "V4 expected 'matched' field: {text}");
+}

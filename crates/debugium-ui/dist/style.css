@@ -582,6 +582,12 @@ header {
     color: var(--accent-red);
 }
 
+.log-llm-query {
+    border-left-color: #a78bfa;
+    color: #a78bfa;
+    font-style: italic;
+}
+
 /* ─── Console input row ──────────────────────────── */
 .console-panel {
     display: flex;
@@ -785,6 +791,17 @@ header {
 
 .status-bar span {
     opacity: .9;
+}
+
+.status-llm-query {
+    margin-left: auto;
+    color: #c4b5fd;
+    font-style: italic;
+    opacity: 1 !important;
+    max-width: 340px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 /* ─── Tooltip ────────────────────────────────────── */

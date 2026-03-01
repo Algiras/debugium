@@ -484,6 +484,53 @@ fn tool_list() -> Value {
                     },
                     "required": []
                 }
+            },
+            {
+                "name": "get_annotations",
+                "description": "Return all annotations pinned to source lines in this session.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string" }
+                    },
+                    "required": []
+                }
+            },
+            {
+                "name": "get_findings",
+                "description": "Return all findings (bug reports / conclusions) added in this session.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string" }
+                    },
+                    "required": []
+                }
+            },
+            {
+                "name": "get_variable_history",
+                "description": "Show how a local variable's value changed across all timeline stops. Useful for 'when did X become wrong?'",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["name"],
+                    "properties": {
+                        "name": { "type": "string", "description": "Variable name to trace." },
+                        "session_id": { "type": "string" }
+                    }
+                }
+            },
+            {
+                "name": "wait_for_output",
+                "description": "Wait until the program prints a line matching a regex pattern (or timeout). Useful for output-driven debugging loops.",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["pattern"],
+                    "properties": {
+                        "pattern":      { "type": "string" },
+                        "timeout_secs": { "type": "integer", "description": "Max seconds to wait. Default 10." },
+                        "session_id":   { "type": "string" }
+                    }
+                }
             }
         ]
     })
@@ -648,6 +695,23 @@ async fn broadcast_command(hub: &Arc<Hub>, session_id: &str, command: &str) {
             "type": "event",
             "event": "commandSent",
             "body": { "command": command, "origin": "mcp" }
+        }),
+    };
+    if let Ok(json) = serde_json::to_string(&envelope) {
+        hub.broadcast(session_id, json).await;
+    }
+}
+
+// ─── Broadcast a synthetic llmQuery event so the UI shows LLM read access ────
+
+async fn broadcast_llm_query(hub: &Arc<Hub>, session_id: &str, tool: &str, detail: &str) {
+    use dap_types::WsEnvelope;
+    let envelope = WsEnvelope {
+        session_id: session_id.to_string(),
+        msg: json!({
+            "type": "event",
+            "event": "llmQuery",
+            "body": { "tool": tool, "detail": detail }
         }),
     };
     if let Ok(json) = serde_json::to_string(&envelope) {
@@ -1306,6 +1370,76 @@ pub async fn dispatch_tool(
                 "watches": watches,
                 "results": results
             }))?)
+        }
+
+        "get_annotations" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
+            let anns = s.annotations.read().await.clone();
+            let detail = format!("{} annotation{}", anns.len(), if anns.len() == 1 { "" } else { "s" });
+            broadcast_llm_query(hub, session_id, "get_annotations", &detail).await;
+            Ok(serde_json::to_string_pretty(&json!({ "annotations": anns }))?)
+        }
+
+        "get_findings" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
+            let findings = s.findings.read().await.clone();
+            let detail = format!("{} finding{}", findings.len(), if findings.len() == 1 { "" } else { "s" });
+            broadcast_llm_query(hub, session_id, "get_findings", &detail).await;
+            Ok(serde_json::to_string_pretty(&json!({ "findings": findings }))?)
+        }
+
+        "get_variable_history" => {
+            let name = args["name"].as_str()
+                .ok_or_else(|| anyhow::anyhow!("get_variable_history: 'name' required"))?;
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
+            broadcast_llm_query(hub, session_id, "get_variable_history", name).await;
+            let tl = s.timeline.read().await;
+            let history: Vec<Value> = tl.iter()
+                .filter_map(|e| {
+                    e.variables_snapshot.get(name).map(|val| json!({
+                        "timeline_id": e.id,
+                        "file": e.file,
+                        "line": e.line,
+                        "timestamp": e.timestamp,
+                        "value": val
+                    }))
+                })
+                .collect();
+            let result_detail = if history.is_empty() {
+                format!("{name} → no history")
+            } else {
+                format!("{name} → {} stop{}", history.len(), if history.len() == 1 { "" } else { "s" })
+            };
+            broadcast_llm_query(hub, session_id, "get_variable_history", &result_detail).await;
+            Ok(serde_json::to_string_pretty(&json!({ "name": name, "history": history }))?)
+        }
+
+        "wait_for_output" => {
+            let pattern = args["pattern"].as_str()
+                .ok_or_else(|| anyhow::anyhow!("wait_for_output: 'pattern' required"))?;
+            let timeout = args.get("timeout_secs").and_then(Value::as_u64).unwrap_or(10);
+            let re = regex::Regex::new(pattern)
+                .map_err(|e| anyhow::anyhow!("invalid regex: {e}"))?;
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
+            broadcast_llm_query(hub, session_id, "wait_for_output", pattern).await;
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout);
+            loop {
+                {
+                    let lines = s.console_lines.read().await;
+                    if let Some(line) = lines.iter().rev().find(|l| re.is_match(l)) {
+                        let matched_line = line.clone();
+                        drop(lines);
+                        let detail = format!("matched: \"{}\"", matched_line.chars().take(60).collect::<String>());
+                        broadcast_llm_query(hub, session_id, "wait_for_output", &detail).await;
+                        return Ok(serde_json::to_string_pretty(&json!({ "matched": true, "line": matched_line }))?);
+                    }
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    broadcast_llm_query(hub, session_id, "wait_for_output", "timed out").await;
+                    return Ok(serde_json::to_string_pretty(&json!({ "matched": false, "line": Value::Null }))?);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
         }
 
         _ => Err(anyhow::anyhow!("Unknown tool: {name}")),
