@@ -1,0 +1,25 @@
+{
+  "_comment": "Remote attach example — connect to a DAP server already running on another host.",
+
+  "name": "Remote Python (SSH tunnel)",
+  "adapterId": "debugpy",
+  "request": "attach",
+  "host": "192.168.1.100",
+  "port": 5678,
+
+  "attach": {
+    "type": "python",
+    "request": "attach",
+    "connect": {
+      "host": "192.168.1.100",
+      "port": 5678
+    },
+    "justMyCode": false
+  },
+
+  "pathMappings": [
+    { "localRoot": "${workspaceFolder}", "remoteRoot": "/app" }
+  ],
+
+  "exceptionBreakpoints": ["uncaught"]
+}

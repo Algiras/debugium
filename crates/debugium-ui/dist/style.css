@@ -73,8 +73,8 @@ body {
 /* ─── Header / Toolbar ───────────────────────────── */
 header {
     height: var(--header-h);
-    background: #2c2c2d;
-    border-bottom: 1px solid #333;
+    background: var(--bg-header);
+    border-bottom: 1px solid var(--border);
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -264,8 +264,8 @@ header {
     align-items: center;
     justify-content: space-between;
     padding: 0 12px;
-    background: #252526;
-    border-bottom: 1px solid #333;
+    background: var(--bg-sidebar);
+    border-bottom: 1px solid var(--border);
     flex-shrink: 0;
 }
 
@@ -1040,7 +1040,27 @@ header {
     border: none;
 }
 
-/* collapse-strip removed — replaced by icon rails */
+/* Sidebar expand rails — visible when sidebar is collapsed */
+.sidebar-rail {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    cursor: pointer;
+    font-size: 10px;
+    color: var(--text-secondary);
+    user-select: none;
+    transition: background .15s;
+    flex-shrink: 0;
+}
+.sidebar-rail:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+.sidebar-rail-left { border-right: none; }
+.sidebar-rail-right { border-left: none; }
 
 /* Narrow-mode tweaks: tighter everything when space is limited */
 .narrow-mode .sidebar-left  { width: 160px; }
@@ -1077,7 +1097,7 @@ header {
     display: flex;
     flex-direction: column;
     align-items: center;
-    background: #1e1e1e;
+    background: var(--bg-app);
     gap: 2px;
     padding: 6px 0;
     z-index: 10;
@@ -1223,7 +1243,7 @@ header {
     align-items: center;
     gap: 8px;
     padding: 4px 16px;
-    background: #252526;
+    background: var(--bg-sidebar);
     border-bottom: 1px solid var(--border);
     font-size: 11px;
     flex-shrink: 0;
@@ -1370,24 +1390,30 @@ header {
 .bp-dot { color: var(--accent-red); font-size: 9px; }
 .bp-line-num { color: var(--text-secondary); }
 
-/* ─── Findings panel ──────────────────────────── */
+/* ─── Findings panel (center area, full width) ── */
 .findings-panel {
     flex-shrink: 0;
     border-top: 1px solid var(--border);
+    background: var(--bg-secondary);
+}
+.findings-panel .panel-header {
+    padding: 4px 12px;
+}
+.findings-panel .panel-header h2 {
+    font-size: 10px;
 }
 .finding-item {
     display: flex;
     align-items: flex-start;
-    gap: 6px;
-    padding: 4px 12px;
-    font-size: 11px;
+    gap: 8px;
+    padding: 8px 12px;
+    font-size: 12px;
     color: var(--text-primary);
-    border-bottom: 1px solid rgba(255,255,255,.04);
+    border-bottom: 1px solid rgba(255,255,255,.06);
 }
 .finding-item:hover { background: var(--bg-item-hover); }
-.finding-icon { flex-shrink: 0; font-size: 10px; }
-.finding-msg { flex: 1; word-break: break-word; }
-.finding-ts { font-size: 9px; color: var(--text-dim); white-space: nowrap; margin-left: 4px; }
+.finding-icon { flex-shrink: 0; font-size: 12px; padding-top: 1px; }
+.finding-msg { flex: 1; word-break: break-word; line-height: 1.5; }
 .finding-error { background: rgba(229,20,0,.06); }
 .finding-warning { background: rgba(255,204,0,.06); }
 
@@ -1422,20 +1448,95 @@ html.light-mode {
     --bg-item-active: #bee0f5;
     --bg-input: #ffffff;
     --bg-secondary: #ebebeb;
+    --bg-tertiary: #ddd;
     --text: #1e1e1e;
     --text-primary: #1e1e1e;
     --text-secondary: #555555;
     --text-dim: #888888;
     --text-white: #000000;
     --border: #c8c8c8;
+    --border-light: #b0b0b0;
+    --accent: #0565b3;
+    --accent-hover: #0478d0;
     --accent-blue: #0070c1;
     --accent-green: #2e7d32;
+    --accent-red: #c62828;
+    --accent-orange: #a0522d;
+    --accent-yellow: #986f00;
+    --text-dim: #999;
+    --shadow: 0 2px 8px rgba(0, 0, 0, .12);
+    --overlay-subtle: rgba(0, 0, 0, .04);
+    --overlay-hover: rgba(0, 0, 0, .08);
+    --overlay-border: rgba(0, 0, 0, .08);
 }
 
 html.light-mode body,
 html.light-mode #app {
     background: var(--bg-app);
     color: var(--text-primary);
+}
+
+html.light-mode .debug-btn {
+    background: rgba(0, 0, 0, .05);
+    border: 1px solid rgba(0, 0, 0, .1);
+}
+html.light-mode .debug-btn:hover {
+    background: rgba(0, 0, 0, .1);
+    border-color: rgba(0, 0, 0, .2);
+}
+html.light-mode .btn-continue { color: #1a7f37; }
+html.light-mode .btn-continue:hover { background: rgba(26, 127, 55, .1); border-color: rgba(26, 127, 55, .3); color: #1a7f37; }
+html.light-mode .btn-step { color: #0550ae; }
+html.light-mode .btn-step:hover { background: rgba(5, 80, 174, .1); border-color: rgba(5, 80, 174, .3); color: #0550ae; }
+html.light-mode .btn-over { color: #7d4e00; }
+html.light-mode .btn-over:hover { background: rgba(125, 78, 0, .1); border-color: rgba(125, 78, 0, .3); color: #7d4e00; }
+html.light-mode .btn-stop { color: #c62828; }
+html.light-mode .btn-stop:hover { background: rgba(198, 40, 40, .1); border-color: rgba(198, 40, 40, .3); color: #c62828; }
+html.light-mode .btn-pause { color: #6f42c1; }
+html.light-mode .btn-restart { color: #2e7d32; }
+html.light-mode .btn-restart:hover { background: rgba(46, 125, 50, .1); border-color: rgba(46, 125, 50, .3); color: #2e7d32; }
+html.light-mode .collapse-btn { color: #555; }
+html.light-mode .collapse-btn:hover { color: #1e1e1e; background: rgba(0,0,0,.08); }
+html.light-mode .btn-theme { color: #555; font-size: 11px; }
+html.light-mode .btn-theme:hover { color: #1e1e1e; }
+html.light-mode .tab-close:hover {
+    background: rgba(0, 0, 0, .1);
+}
+html.light-mode .finding-item {
+    border-bottom-color: rgba(0, 0, 0, .08);
+}
+html.light-mode .sidebar-rail {
+    background: var(--bg-sidebar);
+    border-color: var(--border);
+}
+html.light-mode .sidebar-rail:hover {
+    background: var(--bg-header);
+}
+html.light-mode .header-controls {
+    background: rgba(0, 0, 0, .06);
+    border-color: rgba(0, 0, 0, .1);
+}
+html.light-mode ::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, .15);
+}
+html.light-mode ::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 0, 0, .25);
+}
+/* CodeMirror light theme is handled in cm_init.js via Compartment */
+html.light-mode .var-row:hover {
+    background: var(--bg-item-hover);
+}
+/* Console and panels in light mode */
+html.light-mode .console-line { color: #1e1e1e; }
+html.light-mode .bp-popover {
+    background: #fff;
+    border-color: var(--border);
+    color: #1e1e1e;
+}
+html.light-mode .cm-ann-tooltip {
+    background: #fff;
+    color: #1e1e1e;
+    border-color: var(--border);
 }
 
 /* ─── Timeline panel ──────────────────────────── */

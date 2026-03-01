@@ -1,6 +1,6 @@
 ---
 name: Debugium DAP Debugger
-description: Drive live debug sessions for Python, Node.js, TypeScript, and Rust using the Debugium MCP tools. Use when asked to debug code, set breakpoints, inspect variables, step through execution, trace bugs, or find why something crashes.
+description: Drive live debug sessions for Python, Node.js, TypeScript, C, C++, Rust, Java, Scala, and WebAssembly using the Debugium MCP tools. Use when asked to debug code, set breakpoints, inspect variables, step through execution, trace bugs, or find why something crashes.
 ---
 
 # Debugium Debugger Skill
@@ -9,36 +9,74 @@ Debugium is a DAP (Debug Adapter Protocol) client with an MCP interface. You can
 
 ---
 
-## Quick Start
+## Setup & Connection
 
-### 1. Launch a session
+### 1. Install
 
 ```bash
-# Python
-debugium launch /abs/path/to/script.py --adapter python --breakpoint /abs/path/to/script.py:42
-
-# Node.js / JavaScript
-debugium launch /abs/path/to/app.js --adapter node --breakpoint /abs/path/to/app.js:15
-
-# TypeScript (via ts-node)
-debugium launch /abs/path/to/app.ts --adapter node
-
-# Rust (build first)
-cargo build && debugium launch ./target/debug/my_program --adapter lldb --breakpoint /abs/path/src/main.rs:60
+cargo install --path crates/debugium-server
+# or: cargo build -p debugium-server && cp target/debug/debugium ~/.cargo/bin/
 ```
 
-### 2. Add to `.mcp.json` (project root) or `~/.claude.json`
+### 2. Register MCP server
 
+Add to `.mcp.json` (project root) or `~/.claude.json`:
 ```json
 {
   "mcpServers": {
-    "debugium": {
-      "command": "debugium",
-      "args": ["mcp"]
-    }
+    "debugium": { "command": "debugium", "args": ["mcp"] }
   }
 }
 ```
+
+### 3. Install language prerequisites
+
+| Language | Install |
+|----------|---------|
+| Python | `pip install debugpy` |
+| Node.js / TypeScript | js-debug (build from microsoft/vscode-js-debug) + `npm i -g tsx` for TS |
+| C / C++ / Rust | `lldb-dap` (ships with LLVM: `brew install llvm`) |
+| Java | microsoft/java-debug adapter JAR |
+| Scala | Running Metals language server with DAP |
+
+### 4. Launch a debug session
+
+**Preferred**: use a `dap.json` config from `examples/`. All paths must be absolute.
+
+```bash
+# Python
+debugium launch /abs/path/script.py --config examples/python.dap.json \
+  --breakpoint "/abs/path/script.py:42"
+
+# Node.js
+debugium launch /abs/path/app.js --config examples/node.dap.json \
+  --breakpoint "/abs/path/app.js:15"
+
+# TypeScript
+debugium launch /abs/path/app.ts --config examples/typescript.dap.json \
+  --breakpoint "/abs/path/app.ts:10"
+
+# C / C++ (compile with debug symbols first: cc -g -O0)
+debugium launch /tmp/a.out --config examples/c-cpp.dap.json \
+  --breakpoint "/abs/path/main.c:20"
+
+# Rust (cargo build first)
+debugium launch ./target/debug/myapp --config examples/c-cpp.dap.json \
+  --breakpoint "/abs/path/src/main.rs:10"
+
+# Remote attach (debugpy already listening on 127.0.0.1:5678)
+python3 -m debugpy --listen 127.0.0.1:5678 --wait-for-client app.py &
+debugium launch app.py --config examples/remote-python.dap.json \
+  --breakpoint "/abs/path/app.py:42"
+```
+
+**Shorthand** (Python only): `debugium launch script.py --adapter python --breakpoint ...`
+
+**Auto-discovery**: place `dap.json` in project root, then just `debugium launch program --breakpoint ...`
+
+### 5. Verify connection
+
+Call `get_sessions` — if empty, the server isn't running. Launch a session first.
 
 ---
 
@@ -47,13 +85,14 @@ cargo build && debugium launch ./target/debug/my_program --adapter lldb --breakp
 ### Standard loop
 
 ```
-1. get_sessions          – confirm session is active (empty = server not running)
+1. launch_session        – start a debug session (or get_sessions if one is already running)
 2. get_debug_context     – orient: paused_at + locals + call_stack + source window + breakpoints in ONE call
 3. evaluate / get_variables  – inspect specific values
 4. step_over / step_in   – advance (blocking: waits for pause, safe to chain)
 5. get_debug_context     – re-orient after stepping
 6. annotate / add_finding – record conclusions in the UI
 7. Repeat 3–6 as needed
+8. stop_session          – clean up when done
 ```
 
 **Key insight**: `get_debug_context` replaces the old 7-call chain of
@@ -64,6 +103,19 @@ cargo build && debugium launch ./target/debug/my_program --adapter lldb --breakp
 ## Tool Reference
 
 ### Session
+
+#### `launch_session`
+Launch a new debug session autonomously — no human intervention needed. Spawns the adapter, sets breakpoints, waits until paused.
+```json
+{ "program": "/abs/path/script.py", "adapter": "python", "breakpoints": ["/abs/path/script.py:42"] }
+```
+Returns `{ "session_id": "...", "status": "paused" | "running" }`. Use the returned `session_id` for all subsequent tool calls.
+
+#### `stop_session`
+Stop and clean up a debug session. Sends disconnect, kills adapter, removes from registry.
+```json
+{ "session_id": "session-123" }
+```
 
 #### `get_sessions` / `list_sessions`
 List active sessions. Empty = server not started.
@@ -292,14 +344,21 @@ Continue until any exception is raised.
 
 ---
 
-## Adapter Notes
+## Supported Adapters
 
-| Language   | Flag                | Prerequisite                       |
-|------------|---------------------|------------------------------------|
-| Python     | `--adapter python`  | `pip install debugpy`              |
-| JavaScript | `--adapter node`    | Bundled js-debug                   |
-| TypeScript | `--adapter node`    | `ts-node` in PATH                  |
-| Rust       | `--adapter lldb`    | `codelldb` in PATH + `cargo build` |
+| Language     | `--adapter` flag              | Prerequisite                          | Verified |
+|-------------|-------------------------------|---------------------------------------|----------|
+| Python      | `python` / `debugpy`          | `pip install debugpy`                 | ✅ |
+| Node.js     | `node` / `js`                 | js-debug (bundled)                    | ✅ |
+| TypeScript  | `typescript` / `ts` / `tsx`   | js-debug + `tsx` or `ts-node`         | ✅ |
+| C / C++     | `lldb` / `codelldb`           | `lldb-dap`                            | ✅ |
+| Rust        | `lldb` / `rust`               | `lldb-dap` + `cargo build`            | ✅ |
+| Java        | `java` / `jvm`                | microsoft/java-debug adapter JAR      | ✅ |
+| Scala       | `--config scala-jvm.dap.json` | `scalac` + Scala library JAR          | ✅ |
+| WebAssembly | `--config wasm.dap.json`      | `wasmtime` + `lldb-dap` (LLVM ≥16)   | ✅ |
+| Any adapter | `--config dap.json`           | See `dap.json.example`                | ✅ |
+
+Remote attach is supported via `dap.json` with `host` + `port` fields (no local adapter needed).
 
 ---
 

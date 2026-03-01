@@ -12,6 +12,13 @@ Ideas for future Debugium improvements, especially for LLM-driven debugging work
 - Auto-attach the DAP adapter at the failing assertion line
 - Surface test name, expected vs actual, and full diff in the findings panel
 
+## ~~Expanded dap.json & Remote Debugging~~ ✅ Shipped
+- Rich `dap.json` schema with 12+ config fields (env, args, stopOnEntry, justMyCode, skipFiles, sourceMaps, pathMappings, exceptionBreakpoints, breakpoints)
+- Generic remote attach via `host` + `port` (connect to any DAP server — not just Metals)
+- Auto-discovery: place `dap.json` in cwd or `.debugium/` — no `--adapter` flag needed
+- `--config` CLI flag for explicit config path
+- Verified languages: Python, Node.js, TypeScript, C, C++, Rust, Java, Scala, WebAssembly, plus any DAP adapter via config
+
 ## Reverse / Time-Travel Debugging
 - Integrate with `rr` (Mozilla Record and Replay) for C/C++/Rust programs
 - Add `step_back` and `reverse_continue` MCP tools

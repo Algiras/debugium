@@ -1,0 +1,15 @@
+{
+  "name": "WebAssembly (wasmtime + lldb-dap)",
+  "adapterId": "lldb",
+  "request": "launch",
+  "command": ["/opt/homebrew/opt/llvm/bin/lldb-dap"],
+  "launch": {
+    "type": "lldb",
+    "request": "launch",
+    "program": "/opt/homebrew/bin/wasmtime",
+    "args": ["run", "-D", "debug-info", "-O", "opt-level=0", "${program}"],
+    "initCommands": ["settings set plugin.jit-loader.gdb.enable on"],
+    "sourceLanguages": ["webassembly", "rust", "c", "cpp"]
+  },
+  "_note": "Requires wasmtime (brew install wasmtime) and LLVM >= 16. The .wasm must contain DWARF debug info (-g). macOS requires the JIT loader setting in initCommands."
+}

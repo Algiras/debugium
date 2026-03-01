@@ -1165,4 +1165,8 @@ impl SessionRegistry {
     pub async fn list(&self) -> Vec<String> {
         self.sessions.read().await.keys().cloned().collect()
     }
+
+    pub async fn remove(&self, id: &str) -> Option<Arc<Session>> {
+        self.sessions.write().await.remove(id)
+    }
 }

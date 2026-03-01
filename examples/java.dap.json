@@ -1,0 +1,11 @@
+{
+  "name": "Java (JDI-based DAP adapter)",
+  "adapterId": "java",
+  "request": "launch",
+  "command": ["bash", "tools/java-dap-adapter/run.sh"],
+  "launch": {
+    "type": "java",
+    "request": "launch",
+    "console": "internalConsole"
+  }
+}

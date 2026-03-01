@@ -520,6 +520,36 @@ fn tool_list() -> Value {
                 }
             },
             {
+                "name": "launch_session",
+                "description": "Launch a new debug session autonomously. Spawns the debug adapter, connects, sets breakpoints, and waits until the session is paused (or running). Returns the session_id for use with all other tools.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "program": { "type": "string", "description": "Absolute path to the program to debug." },
+                        "adapter": { "type": "string", "description": "Debug adapter: 'python', 'node', 'typescript', 'lldb'. Default: 'python'." },
+                        "config": { "type": "string", "description": "Path to a dap.json config file (alternative to adapter)." },
+                        "breakpoints": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Initial breakpoints as 'file:line' strings, e.g. ['/path/app.py:42']."
+                        },
+                        "session_id": { "type": "string", "description": "Custom session ID. Auto-generated if omitted." }
+                    },
+                    "required": ["program"]
+                }
+            },
+            {
+                "name": "stop_session",
+                "description": "Stop and clean up a debug session. Sends disconnect to the adapter, kills the adapter process, and removes the session from the registry.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string", "description": "Session to stop. Defaults to 'default'." }
+                    },
+                    "required": []
+                }
+            },
+            {
                 "name": "wait_for_output",
                 "description": "Wait until the program prints a line matching a regex pattern (or timeout). Pass from_line=console_line_count from continue_execution to only match output printed after the resume.",
                 "inputSchema": {
@@ -1458,11 +1488,144 @@ pub async fn dispatch_tool(
             }
         }
 
+        // ── Session lifecycle ─────────────────────────────────────
+        "launch_session" => {
+            let program_str = args.get("program").and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("`program` is required"))?;
+            let program = std::path::PathBuf::from(program_str);
+            let adapter_str = args.get("adapter").and_then(Value::as_str).unwrap_or("python");
+            let config_path = args.get("config").and_then(Value::as_str);
+
+            let kind = if let Some(cfg) = config_path {
+                crate::dap::adapter::AdapterKind::from_str(cfg)
+            } else {
+                crate::dap::adapter::AdapterKind::from_str(adapter_str)
+            };
+
+            let adapter = crate::dap::adapter::Adapter::new(kind);
+            let sid = args.get("session_id").and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    format!("session-{}", chrono::Utc::now().timestamp_millis())
+                });
+
+            let session = crate::dap::session::Session::new(sid.clone(), adapter, hub.clone())
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to create session: {e}"))?;
+
+            registry.insert(session.clone()).await;
+
+            // Parse breakpoints
+            let bp_strs: Vec<String> = args.get("breakpoints")
+                .and_then(Value::as_array)
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            let breakpoints = parse_breakpoint_strings(&bp_strs);
+
+            let cwd = std::env::current_dir().unwrap_or_default();
+
+            // Run configure_and_launch and wait for it to complete (includes DAP handshake)
+            let session2 = session.clone();
+            let program2 = program.clone();
+            let cwd2 = cwd.clone();
+            let launch_handle = tokio::spawn(async move {
+                session2.configure_and_launch(program2, cwd2, &breakpoints).await
+            });
+
+            // Wait up to 30s for the launch to complete
+            match tokio::time::timeout(std::time::Duration::from_secs(30), launch_handle).await {
+                Ok(Ok(Ok(()))) => {}
+                Ok(Ok(Err(e))) => return Err(anyhow::anyhow!("Launch failed: {e}")),
+                Ok(Err(e)) => return Err(anyhow::anyhow!("Launch task panicked: {e}")),
+                Err(_) => return Err(anyhow::anyhow!("Launch timed out after 30s")),
+            }
+
+            // Try to wait briefly for a breakpoint hit
+            let status = match session.wait_for_stop(5).await {
+                Ok(()) => "paused",
+                Err(_) => "running",
+            };
+
+            // Broadcast session_launched on ALL existing sessions so connected UI clients hear it
+            {
+                use dap_types::WsEnvelope;
+                let all_ids = registry.list().await;
+                for existing_id in &all_ids {
+                    let envelope = WsEnvelope {
+                        session_id: sid.clone(),
+                        msg: json!({
+                            "type": "event",
+                            "event": "session_launched",
+                            "body": { "session_id": sid, "program": program_str, "status": status }
+                        }),
+                    };
+                    if let Ok(j) = serde_json::to_string(&envelope) {
+                        hub.broadcast(existing_id, j).await;
+                    }
+                }
+            }
+
+            Ok(serde_json::to_string_pretty(&json!({
+                "session_id": sid,
+                "status": status,
+                "program": program_str,
+                "hint": "Call get_debug_context to see where execution paused."
+            }))?)
+        }
+
+        "stop_session" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
+
+            // Send disconnect to adapter
+            let _ = s.client.request("disconnect", Some(json!({ "terminateDebuggee": true }))).await;
+
+            // Kill adapter process if we have a PID
+            if let Some(meta) = s.meta.read().await.as_ref() {
+                if let Some(pid) = meta.adapter_pid {
+                    let _ = nix_kill(pid);
+                }
+            }
+
+            // Remove from registry
+            registry.remove(session_id).await;
+
+            Ok(format!("Session '{session_id}' stopped and removed."))
+        }
+
         _ => Err(anyhow::anyhow!("Unknown tool: {name}")),
     }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+fn parse_breakpoint_strings(raw: &[String]) -> Vec<(String, Vec<u32>)> {
+    let mut map: std::collections::HashMap<String, Vec<u32>> = std::collections::HashMap::new();
+    for bp in raw {
+        if let Some((file, line_str)) = bp.rsplit_once(':') {
+            if let Ok(line) = line_str.parse::<u32>() {
+                map.entry(file.to_string()).or_default().push(line);
+            }
+        }
+    }
+    map.into_iter().collect()
+}
+
+/// Kill a process by PID (best-effort).
+fn nix_kill(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        unsafe { libc::kill(pid as i32, libc::SIGTERM) == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        // On Windows, use taskkill
+        std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/F"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+}
 
 fn require_u32(args: &Value, key: &str) -> Result<u32> {
     args.get(key)

@@ -1,0 +1,11 @@
+{
+  "name": "Rust (lldb-dap)",
+  "adapterId": "lldb",
+  "request": "launch",
+  "command": ["/opt/homebrew/opt/llvm/bin/lldb-dap"],
+  "launch": {
+    "type": "lldb",
+    "request": "launch"
+  },
+  "_note": "Build first with: cargo build"
+}
