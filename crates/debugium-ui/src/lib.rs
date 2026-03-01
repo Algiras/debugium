@@ -621,21 +621,6 @@ pub fn App() -> impl IntoView {
             <ProcessInfoBar active_session=active_session.read_only() session_metas=session_metas.read_only() />
             <div class="dashboard-wrapper">
 
-                // ── Left icon rail — only show when multiple sessions ──
-                <Show when=move || multi_session()>
-                    <div class="icon-rail icon-rail-left">
-                        <button
-                            class="rail-btn"
-                            class:rail-btn-active=move || !lc.get()
-                            on:click=move |_| lc.update(|v| *v = !*v)
-                            title="Sessions"
-                        >
-                            <span class="rail-icon">"⬚"</span>
-                            <span class="rail-label">"Sessions"</span>
-                        </button>
-                    </div>
-                </Show>
-
                 <aside
                     class="sidebar sidebar-left"
                     class:collapsed=move || lc.get() || !multi_session()
@@ -672,19 +657,20 @@ pub fn App() -> impl IntoView {
                     <TimelinePanel session_data=session_data active_session=active_session.read_only() />
                 </aside>
 
-                // ── Right icon rail (always visible) ──
-                <div class="icon-rail icon-rail-right">
-                    <button
-                        class="rail-btn"
-                        class:rail-btn-active=move || !rc.get()
-                        on:click=move |_| rc.update(|v| *v = !*v)
-                        title="Stack & Variables"
-                    >
-                        <span class="rail-icon">"⚙"</span>
-                        <span class="rail-label">"Debug"</span>
-                    </button>
-                </div>
-
+            </div>
+            // ── Status bar ──
+            <div class="status-bar">
+                <span>{move || active_session.get().unwrap_or_else(|| "No session".into())}</span>
+                <span>{move || active_session.get()
+                    .and_then(|id| session_data.get().get(&id).cloned())
+                    .map(|s| s.status)
+                    .unwrap_or_default()
+                }</span>
+                <span>{move || active_session.get()
+                    .and_then(|id| session_data.get().get(&id).cloned())
+                    .and_then(|s| s.source_path.map(|p| basename(&p)))
+                    .unwrap_or_default()
+                }</span>
             </div>
         </div>
     }
@@ -1115,6 +1101,15 @@ fn handle_envelope(
         }
     });
 
+    // Clear in-flight spinner for any successful response (events already handled above)
+    if envelope.msg.get("type").and_then(Value::as_str) == Some("response")
+        && envelope.msg.get("success").and_then(Value::as_bool).unwrap_or(false)
+    {
+        if cmd_in_flight.get_untracked().as_ref().map(|(s, _)| s.as_str()) == Some(id.as_str()) {
+            cmd_in_flight.set(None);
+        }
+    }
+
     // Follow-up: request scopes for the top frame after stackTrace response
     if let Some((sid, frame_id)) = post_scopes_request {
         send_cmd(ws_senders, &sid, "scopes", serde_json::json!({ "frameId": frame_id }));
@@ -1272,6 +1267,23 @@ fn Header(
                         ></span>
                     }
                 }
+                // Session status chip
+                {
+                    let chip = move || {
+                        active_session.get()
+                            .and_then(|id| session_data.get().get(&id).cloned())
+                            .map(|s| match s.status.as_str() {
+                                "paused"  => ("status-chip chip-paused",  "⏸ Paused"),
+                                "ended"   => ("status-chip chip-ended",   "■ Ended"),
+                                _         => ("status-chip chip-running", "▶ Running"),
+                            })
+                    };
+                    view! {
+                        <Show when=move || chip().is_some()>
+                            <span class=move || chip().unwrap().0>{move || chip().unwrap().1}</span>
+                        </Show>
+                    }
+                }
                 // In-flight command toast
                 <Show when=move || in_flight_label().is_some()>
                     <div class="cmd-toast">
@@ -1283,6 +1295,7 @@ fn Header(
             <div class="header-controls">
                 <button
                     class=move || format!("btn-continue {}", btn_class("Continue"))
+                    title="Continue (F5)"
                     disabled=move || !is_paused() || cmd_signal.get().is_some()
                     on:click=move |_| do_cmd("continue", "Continue")
                 >
@@ -1297,6 +1310,7 @@ fn Header(
                 </button>
                 <button
                     class=move || format!("btn-step {}", btn_class("Step In"))
+                    title="Step Into (F11)"
                     disabled=move || !is_paused() || cmd_signal.get().is_some()
                     on:click=move |_| do_cmd("stepIn", "Step In")
                 >
@@ -1304,6 +1318,7 @@ fn Header(
                 </button>
                 <button
                     class=move || format!("btn-over {}", btn_class("Step Over"))
+                    title="Step Over (F10)"
                     disabled=move || !is_paused() || cmd_signal.get().is_some()
                     on:click=move |_| do_cmd("next", "Step Over")
                 >
@@ -1311,6 +1326,7 @@ fn Header(
                 </button>
                 <button
                     class=move || btn_class("Step Out")
+                    title="Step Out (Shift+F11)"
                     disabled=move || !is_paused() || cmd_signal.get().is_some()
                     on:click=move |_| do_cmd("stepOut", "Step Out")
                 >
@@ -1322,6 +1338,7 @@ fn Header(
                 <button
                     class="debug-btn btn-stop"
                     title="Stop session (terminate)"
+                    disabled=move || active_session.get().is_none()
                     on:click={
                         let ws_s = ws_senders.clone();
                         let act = active_session.clone();
@@ -1337,6 +1354,7 @@ fn Header(
                 <button
                     class="debug-btn btn-restart"
                     title="Restart session"
+                    disabled=move || active_session.get().is_none()
                     on:click={
                         let ws_s2 = ws_senders.clone();
                         let act2 = active_session.clone();
@@ -1387,6 +1405,16 @@ fn SessionsPanel(
             <div class="panel" style="flex:1;overflow:hidden">
                 <div class="panel-header">
                     <h2>"Sessions"</h2>
+                    {
+                        let layout_sp = use_context::<LayoutState>().expect("no LayoutState");
+                        view! {
+                            <button
+                                class="collapse-btn"
+                                title="Collapse sessions sidebar"
+                                on:click=move |_| layout_sp.left_collapsed.update(|v| *v = !*v)
+                            >{move || if layout_sp.left_collapsed.get() { "▶" } else { "◀" }}</button>
+                        }
+                    }
                 </div>
                 <div class="panel-content scrollable">
                     <ul class="list-view">
@@ -1796,6 +1824,7 @@ fn SourcePanel(
                                     class="tab-chip"
                                     class:tab-active=is_active
                                     class:tab-exec=is_exec_class
+                                    title={file.clone()}
                                     on:click=on_click
                                 >
                                     <Show when=is_exec_show>
@@ -1865,8 +1894,8 @@ fn StackPanel(
                 <button
                     class="collapse-btn"
                     title="Collapse right panel"
-                    on:click=move |_| layout.right_collapsed.set(true)
-                >"✕"</button>
+                    on:click=move |_| layout.right_collapsed.update(|v| *v = !*v)
+                >{move || if layout.right_collapsed.get() { "◀" } else { "▶" }}</button>
             </div>
             <div class="panel-content scrollable">
                 <ul class="list-view">
@@ -2245,6 +2274,17 @@ fn ConsolePanel(
             .unwrap_or_default()
     };
 
+    // Auto-scroll console to bottom when new logs arrive
+    Effect::new(move |_| {
+        let _ = logs(); // subscribe to changes
+        if let Some(el) = web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.get_element_by_id("console-logs"))
+        {
+            el.set_scroll_top(el.scroll_height());
+        }
+    });
+
     let do_eval = {
         let ws_eval = ws_senders.clone();
         move |_| {
@@ -2302,6 +2342,19 @@ fn ConsolePanel(
                     title="Toggle console body"
                     on:click=move |_| layout.console_collapsed.update(|v| *v = !*v)
                 >{move || if layout.console_collapsed.get() { "▸" } else { "▾" }}</button>
+                <button
+                    class="collapse-btn"
+                    title="Clear console"
+                    on:click=move |_| {
+                        if let Some(sid) = active_session.get_untracked() {
+                            session_data.update(|map| {
+                                if let Some(s) = map.get_mut(&sid) {
+                                    s.console_logs.clear();
+                                }
+                            });
+                        }
+                    }
+                >"🗑"</button>
                 <button
                     class=move || if exc_uncaught.get() { "exc-toggle exc-on" } else { "exc-toggle" }
                     title="Toggle break on uncaught exceptions"
@@ -2443,8 +2496,8 @@ fn BreakpointsPanel(
         active_session.get()
             .and_then(|id| session_data.get().get(&id).cloned())
             .map(|s| {
-                let mut entries: Vec<(String, Vec<u32>)> = s.breakpoints.iter()
-                    .map(|(f, specs)| (f.clone(), specs.iter().map(|s| s.line).collect()))
+                let mut entries: Vec<(String, Vec<BreakpointSpec>)> = s.breakpoints.iter()
+                    .map(|(f, specs)| (f.clone(), specs.clone()))
                     .collect();
                 entries.sort_by(|a, b| a.0.cmp(&b.0));
                 entries
@@ -2495,25 +2548,27 @@ fn BreakpointsPanel(
                             let at = active_tab;
                             let sd2 = session_data;
                             let asi2 = active_session;
-                            move |(file, lines): (String, Vec<u32>)| {
+                            move |(file, specs): (String, Vec<BreakpointSpec>)| {
                                 let file_name = basename(&file);
                                 view! {
                                     <li class="bp-file-header">
                                         <span class="bp-file-name" title={file.clone()}>{file_name}</span>
                                     </li>
                                     <For
-                                        each=move || lines.clone()
-                                        key=|l| *l
+                                        each=move || specs.clone()
+                                        key=|s| s.line
                                         children={
                                             let f = file.clone();
                                             let at2 = at;
                                             let sd3 = sd2;
                                             let asi3 = asi2;
-                                            move |line: u32| {
+                                            move |spec: BreakpointSpec| {
                                                 let f2 = f.clone();
                                                 let at3 = at2;
                                                 let sd4 = sd3;
                                                 let asi4 = asi3;
+                                                let line = spec.line;
+                                                let cond = spec.condition.clone();
                                                 view! {
                                                     <li
                                                         class="bp-line-item"
@@ -2536,6 +2591,14 @@ fn BreakpointsPanel(
                                                     >
                                                         <span class="bp-dot">"●"</span>
                                                         <span class="bp-line-num">"line "{line}</span>
+                                                        {
+                                                            let c = cond.clone();
+                                                            if let Some(condition) = c {
+                                                                view! { <span class="bp-condition" title="Condition">"⚑ "{condition}</span> }.into_any()
+                                                            } else {
+                                                                view! { <span></span> }.into_any()
+                                                            }
+                                                        }
                                                     </li>
                                                 }
                                             }
@@ -2627,6 +2690,7 @@ fn WatchPanel(
 
     let new_watch: RwSignal<String> = RwSignal::new(String::new());
     let watches = layout.watches;
+    let watch_collapsed: RwSignal<bool> = RwSignal::new(false);
 
     let watch_results = move || {
         active_session.get()
@@ -2659,10 +2723,16 @@ fn WatchPanel(
     };
 
     view! {
-        <div class="panel watch-panel" style="flex: 0 0 auto; max-height: 200px; border-top: 1px solid var(--border); overflow: hidden;">
+        <div class="panel watch-panel" style=move || if watch_collapsed.get() { "flex: 0 0 32px; overflow: hidden; border-top: 1px solid var(--border);" } else { "flex: 0 0 auto; max-height: 200px; border-top: 1px solid var(--border); overflow: hidden;" }>
             <div class="panel-header">
                 <h2>"Watch"</h2>
+                <button
+                    class="collapse-btn"
+                    title="Toggle Watch"
+                    on:click=move |_| watch_collapsed.update(|v| *v = !*v)
+                >{move || if watch_collapsed.get() { "▸" } else { "▾" }}</button>
             </div>
+            <Show when=move || !watch_collapsed.get()>
             <div class="panel-content scrollable">
                 <ul class="list-view">
                     <For
@@ -2723,6 +2793,7 @@ fn WatchPanel(
                     <button class="eval-btn" on:click=move |_| add_watch(())>"+"</button>
                 </div>
             </div>
+            </Show>
         </div>
     }
 }

@@ -5,6 +5,56 @@ use anyhow::Result;
 use serde_json::{json, Value};
 use tokio::process::{Child, Command};
 
+/// Configuration loaded from a `dap.json` file.
+/// The file format is:
+/// ```json
+/// {
+///   "command": ["path/to/adapter", "--arg"],
+///   "launch": { "type": "...", "request": "launch", ... }
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DapConfig {
+    /// Adapter executable + arguments.
+    pub command: Vec<String>,
+    /// Launch (or attach) arguments forwarded verbatim to the adapter.
+    pub launch: Value,
+    /// Adapter type identifier used in `initialize`.
+    pub adapter_id: String,
+    /// Whether this adapter speaks TCP after spawn (like js-debug). Default false.
+    pub tcp_after_spawn: bool,
+}
+
+impl DapConfig {
+    /// Load from a JSON file path.
+    pub fn load(path: &Path) -> Result<Self> {
+        let raw = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("cannot read dap.json at {}: {e}", path.display()))?;
+        let v: Value = serde_json::from_str(&raw)
+            .map_err(|e| anyhow::anyhow!("invalid dap.json: {e}"))?;
+        let command: Vec<String> = v["command"]
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("dap.json: \"command\" must be an array"))?
+            .iter()
+            .filter_map(|s| s.as_str().map(str::to_string))
+            .collect();
+        if command.is_empty() {
+            anyhow::bail!("dap.json: \"command\" array is empty");
+        }
+        let launch = v.get("launch").cloned().unwrap_or(Value::Null);
+        let adapter_id = v.get("adapterId")
+            .or_else(|| v.get("adapter_id"))
+            .and_then(Value::as_str)
+            .unwrap_or("custom")
+            .to_string();
+        let tcp_after_spawn = v.get("tcpAfterSpawn")
+            .or_else(|| v.get("tcp_after_spawn"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        Ok(DapConfig { command, launch, adapter_id, tcp_after_spawn })
+    }
+}
+
 /// The type of debug adapter to use.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdapterKind {
@@ -18,6 +68,10 @@ pub enum AdapterKind {
     Java,
     /// Scala via Metals Language Server DAP (attach mode via TCP)
     Metals { port: u16 },
+    /// WebAssembly via lldb-dap with WASM target support
+    Wasm,
+    /// Fully custom adapter loaded from a dap.json config file.
+    DapConfig(DapConfig),
     Custom(Vec<String>),
 }
 
@@ -29,10 +83,23 @@ impl AdapterKind {
             "typescript" | "ts" | "ts-node" | "tsx" => Self::TypeScript,
             "lldb" | "codelldb" | "rust" => Self::CodeLldb,
             "java" | "jvm" => Self::Java,
+            "wasm" | "webassembly" => Self::Wasm,
             "metals" | "scala" => Self::Metals { port: 5005 },
             _ if s.starts_with("metals:") => {
                 let port = s.trim_start_matches("metals:").parse().unwrap_or(5005);
                 Self::Metals { port }
+            }
+            // dap.json — resolve relative to cwd
+            _ if s == "dap.json" || s.ends_with(".json") || s.starts_with("config:") => {
+                let path_str = s.trim_start_matches("config:");
+                let path = PathBuf::from(path_str);
+                match DapConfig::load(&path) {
+                    Ok(cfg) => Self::DapConfig(cfg),
+                    Err(e) => {
+                        eprintln!("Warning: failed to load dap config {path_str}: {e}");
+                        Self::Custom(vec![path_str.to_string()])
+                    }
+                }
             }
             _ => Self::Python,
         }
@@ -130,6 +197,31 @@ impl Adapter {
                 (child, argv)
             }
 
+            AdapterKind::Wasm => {
+                // WASM debugging via lldb-dap (LLVM ≥16 has basic WASM support)
+                let lldb_path = find_lldb_dap();
+                let lldb_str = lldb_path.to_str().unwrap_or("lldb-dap").to_string();
+                let child = Command::new(&lldb_path)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::inherit())
+                    .spawn()?;
+                let argv = format!("{lldb_str} (wasm)");
+                (child, argv)
+            }
+
+            AdapterKind::DapConfig(cfg) => {
+                let (prog, args) = cfg.command.split_first().expect("empty dap.json command");
+                let child = Command::new(prog)
+                    .args(args)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::inherit())
+                    .spawn()?;
+                let argv = cfg.command.join(" ");
+                (child, argv)
+            }
+
             AdapterKind::Custom(cmd) => {
                 let (prog, args) = cmd.split_first().expect("empty command");
                 let child = Command::new(prog)
@@ -159,6 +251,7 @@ impl Adapter {
                 "console": "internalConsole",
                 "cwd": cwd.to_str().unwrap_or(""),
                 "justMyCode": false,
+                "subProcess": true,
                 "debugOptions": ["RedirectOutput", "ShowReturnValue"]
             }),
 
@@ -215,6 +308,36 @@ impl Adapter {
                     .and_then(|s| s.to_str()).unwrap_or("root"),
             }),
 
+            AdapterKind::Wasm => json!({
+                "type": "lldb",
+                "request": "launch",
+                "program": program.to_str().unwrap_or(""),
+                "cwd": cwd.to_str().unwrap_or(""),
+                "args": [],
+                "env": {},
+                // WASM debugging requires the source map and dwarf info embedded in the .wasm
+                "sourceLanguages": ["webassembly", "rust", "c", "cpp"],
+            }),
+
+            AdapterKind::DapConfig(cfg) => {
+                // Use the launch block from dap.json verbatim; fill in `program` and `cwd`
+                // only if the config doesn't already supply them.
+                let mut launch = cfg.launch.clone();
+                if launch.is_null() {
+                    launch = json!({
+                        "request": "launch",
+                        "program": program.to_str().unwrap_or(""),
+                        "cwd": cwd.to_str().unwrap_or("")
+                    });
+                } else {
+                    if let Some(obj) = launch.as_object_mut() {
+                        obj.entry("program").or_insert_with(|| json!(program.to_str().unwrap_or("")));
+                        obj.entry("cwd").or_insert_with(|| json!(cwd.to_str().unwrap_or("")));
+                    }
+                }
+                launch
+            }
+
             AdapterKind::Custom(_) => json!({
                 "request": "launch",
                 "program": program.to_str().unwrap_or(""),
@@ -231,7 +354,9 @@ impl Adapter {
             AdapterKind::TypeScript => "pwa-node",
             AdapterKind::CodeLldb => "lldb",
             AdapterKind::Java => "java",
+            AdapterKind::Wasm => "lldb",
             AdapterKind::Metals { .. } => "metals",
+            AdapterKind::DapConfig(cfg) => &cfg.adapter_id,
             AdapterKind::Custom(_) => "custom",
         }
     }
@@ -244,7 +369,11 @@ impl Adapter {
     /// True for adapters that spawn a TCP server and print the port to stdout
     /// (js-debug for Node.js / TypeScript).
     pub fn is_tcp_after_spawn(&self) -> bool {
-        matches!(self.kind, AdapterKind::NodeJs | AdapterKind::TypeScript)
+        match &self.kind {
+            AdapterKind::NodeJs | AdapterKind::TypeScript => true,
+            AdapterKind::DapConfig(cfg) => cfg.tcp_after_spawn,
+            _ => false,
+        }
     }
 
     /// TCP port for attach-mode adapters.

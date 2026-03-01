@@ -1,0 +1,14 @@
+{
+  "_comment": "Copy this file to dap.json and adapt to your adapter. Then use: debugium launch --adapter dap.json <program>",
+
+  "adapterId": "debugpy",
+
+  "command": ["python3", "-m", "debugpy.adapter"],
+
+  "launch": {
+    "type": "python",
+    "request": "launch",
+    "console": "internalConsole",
+    "justMyCode": false
+  }
+}

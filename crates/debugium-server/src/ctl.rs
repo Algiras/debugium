@@ -246,7 +246,7 @@ pub async fn vars(opts: Opts, frame_id: Option<u64>) -> Result<()> {
         let frames_raw = call(
             port,
             "get_stack_trace",
-            json!({ "session": opts.session, "thread_id": 1 }),
+            json!({ "session": opts.session }),
         )
         .await?;
         let frames: Value = serde_json::from_str(&frames_raw)?;
@@ -320,7 +320,7 @@ pub async fn eval(opts: Opts, expression: String, frame_id: Option<u64>) -> Resu
         let frames_raw = call(
             port,
             "get_stack_trace",
-            json!({ "session": opts.session, "thread_id": 1 }),
+            json!({ "session": opts.session }),
         )
         .await?;
         let frames: Value = serde_json::from_str(&frames_raw)?;

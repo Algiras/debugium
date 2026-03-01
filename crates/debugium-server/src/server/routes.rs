@@ -358,6 +358,20 @@ pub async fn watches_handler(
     Json(json!({ "watches": watches, "results": results })).into_response()
 }
 
+// ─── MCP proxy endpoint ──────────────────────────────────────────────────────
+
+pub async fn mcp_proxy_handler(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> impl IntoResponse {
+    let tool = body["tool"].as_str().unwrap_or("");
+    let args = body.get("args").cloned().unwrap_or(json!({}));
+    match crate::mcp::dispatch_tool(tool, args, &state.sessions, &state.hub).await {
+        Ok(result) => Json(json!({ "ok": true, "result": result })),
+        Err(e) => Json(json!({ "ok": false, "error": e.to_string() })),
+    }
+}
+
 fn parse_breakpoints_str(raw: Vec<String>) -> Vec<(String, Vec<u32>)> {
     let mut map: std::collections::HashMap<String, Vec<u32>> = std::collections::HashMap::new();
     for bp in raw {

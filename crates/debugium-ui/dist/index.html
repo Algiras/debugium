@@ -20,13 +20,13 @@
     <!-- CodeMirror 6 — provides window.__cm_init / __cm_set_exec_line -->
     <script type="module" src="/pkg/cm_init.js?v=6"></script>
     <!-- Leptos WASM bundle -->
-    <link rel="modulepreload" href="/pkg/debugium_ui.js?v=10">
+    <link rel="modulepreload" href="/pkg/debugium_ui.js?v=7">
     <link rel="preload" href="/pkg/debugium_ui_bg.wasm" as="fetch" type="application/wasm" crossorigin="">
 </head>
 
 <body>
     <script type="module">
-        import init from '/pkg/debugium_ui.js?v=10';
+        import init from '/pkg/debugium_ui.js?v=7';
         await init();
     </script>
 </body>

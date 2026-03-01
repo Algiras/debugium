@@ -760,7 +760,11 @@ pub async fn dispatch_tool(
 
         "get_stack_trace" => {
             let s = session.ok_or_else(|| anyhow::anyhow!("Session not found"))?;
-            let thread_id = require_u32(&args, "thread_id")?;
+            let thread_id = if let Some(t) = args.get("thread_id").and_then(Value::as_u64) {
+                t as u32
+            } else {
+                paused_thread_id(&s).await
+            };
             let depth = args.get("depth").and_then(Value::as_u64).unwrap_or(20);
             broadcast_command(hub, session_id, "stackTrace").await;
             let resp = s.client.request("stackTrace", Some(json!({
@@ -796,8 +800,9 @@ pub async fn dispatch_tool(
             let frame_id = if let Some(v) = args.get("frame_id").and_then(Value::as_u64) {
                 v as u32
             } else {
+                let tid = paused_thread_id(&s).await;
                 let st = s.client.request("stackTrace", Some(json!({
-                    "threadId": 1, "startFrame": 0, "levels": 1
+                    "threadId": tid, "startFrame": 0, "levels": 1
                 }))).await?;
                 st.get("body").and_then(|b| b["stackFrames"].as_array())
                     .and_then(|a| a.first())
@@ -912,7 +917,11 @@ pub async fn dispatch_tool(
         // ── Compound / LLM-optimised tools ────────────────────────────
         "get_debug_context" => {
             let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
-            let thread_id = args.get("thread_id").and_then(Value::as_u64).unwrap_or(1) as u32;
+            let thread_id = if let Some(t) = args.get("thread_id").and_then(Value::as_u64) {
+                t as u32
+            } else {
+                paused_thread_id(&s).await
+            };
             let compact = args.get("verbosity").and_then(Value::as_str).unwrap_or("full") == "compact";
             let max_frames: usize = if compact { 3 } else { 20 };
             let max_vars: usize = if compact { 10 } else { 30 };
@@ -1310,4 +1319,15 @@ fn require_u32(args: &Value, key: &str) -> Result<u32> {
         .and_then(Value::as_u64)
         .map(|n| n as u32)
         .ok_or_else(|| anyhow::anyhow!("`{key}` is required and must be an integer"))
+}
+
+/// Returns the threadId of the most recently stopped thread, falling back to 1.
+async fn paused_thread_id(session: &Arc<crate::dap::session::Session>) -> u32 {
+    let guard = session.last_stopped.read().await;
+    guard
+        .as_ref()
+        .and_then(|ev: &Value| ev.get("body"))
+        .and_then(|b: &Value| b.get("threadId"))
+        .and_then(Value::as_u64)
+        .unwrap_or(1) as u32
 }

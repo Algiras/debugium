@@ -220,12 +220,21 @@ impl Session {
                         let st = stopped_s.clone();
                         let ls = last_s.clone();
                         let sd = sd_tx_s.clone();
-                        if let Some(port) = js_debug_port {
+                        // Determine the TCP port for the child session:
+                        //  1. js-debug adapters: use the known TCP port.
+                        //  2. Generic DAP 1.51+ adapters: the startDebugging config may
+                        //     carry a `port` field pointing to a TCP debug server.
+                        let port_opt = js_debug_port.or_else(|| {
+                            cfg.get("port").and_then(Value::as_u64).map(|p| p as u16)
+                        });
+                        if let Some(port) = port_opt {
                             tokio::spawn(async move {
                                 if let Err(e) = attach_child_session(port, cfg, h, s, st, ls, sd).await {
                                     warn!("child session error: {e}");
                                 }
                             });
+                        } else {
+                            warn!("[{s}] startDebugging: no TCP port available for child session — ignoring");
                         }
                     }
                 });
@@ -251,12 +260,12 @@ impl Session {
                         let raw_ack = encode_dap_frame(&ack.to_string());
                         let _ = client2.send_raw(raw_ack).await;
 
-                        // `startDebugging`: js-debug wants us to open a child DAP session.
+                        // `startDebugging`: adapter (js-debug, or any DAP 1.51+ adapter)
+                        // wants us to open a child DAP session with the supplied config.
+                        // We accept this for any adapter — not just js-debug.
                         if original.get("command").and_then(|v| v.as_str()) == Some("startDebugging") {
-                            let pending_id = original["arguments"]["configuration"]["__pendingTargetId"]
-                                .as_str().unwrap_or("").to_string();
                             let child_config = original["arguments"]["configuration"].clone();
-                            if !pending_id.is_empty() {
+                            if !child_config.is_null() {
                                 let _ = sd_tx.send(child_config).await;
                             }
                         }
@@ -266,6 +275,31 @@ impl Session {
                     // Broadcast every other event to WebSocket clients
                     let ev_name = event.get("event").and_then(|v| v.as_str()).unwrap_or("?");
                     info!("[{}] DAP event: {}", session_id, ev_name);
+
+                    // debugpy subprocess support: auto-attach to child processes.
+                    // `debugpyAttach` body contains `connect.{host,port}` — the adapter's
+                    // external TCP socket — and a full attach config. We TCP-connect to that
+                    // socket and send the provided config as the `attach` request, routing
+                    // the adapter to the child subprocess identified by `subProcessId`.
+                    if ev_name == "debugpyAttach" {
+                        let host = event["body"]["connect"]["host"]
+                            .as_str().unwrap_or("127.0.0.1").to_string();
+                        let child_port = event["body"]["connect"]["port"]
+                            .as_u64().unwrap_or(0) as u16;
+                        let attach_config = event["body"].clone();
+                        if child_port > 0 {
+                            let hub_c = hub2.clone();
+                            let sid_c = session_id.clone();
+                            let stopped_c = stopped_tx2.clone();
+                            let last_c = last_stopped2.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = attach_debugpy_child(host, child_port, attach_config, hub_c, sid_c, stopped_c, last_c).await {
+                                    warn!("debugpy child attach error: {e}");
+                                }
+                            });
+                        }
+                    }
+
                     broadcast_json(&hub2, &session_id, event.clone()).await;
 
                     // Capture output events into the rolling console_lines buffer
@@ -684,17 +718,104 @@ async fn attach_child_session(
                 let original = &event["original"];
                 let cmd = original.get("command").and_then(|v| v.as_str()).unwrap_or("");
                 if cmd == "startDebugging" {
-                    let pending_id = original["arguments"]["configuration"]["__pendingTargetId"]
-                        .as_str().unwrap_or("").to_string();
                     let grandchild_config = original["arguments"]["configuration"].clone();
-                    if !pending_id.is_empty() {
-                        info!("[{sid}] Queuing child session for target {pending_id}");
+                    if !grandchild_config.is_null() {
+                        let pending_id = grandchild_config["__pendingTargetId"]
+                            .as_str().unwrap_or("(none)");
+                        info!("[{sid}] Queuing grandchild session (pendingTargetId={pending_id})");
                         let _ = sd_tx.send(grandchild_config).await;
                     }
                 }
             }
         }
         info!("[{sid}] child DAP session closed");
+    });
+
+    Ok(())
+}
+
+/// Auto-attach to a child Python process that signalled via `debugpyAttach`.
+///
+/// debugpy fires this event when `subProcess: true` is set and the parent spawns a
+/// subprocess. The body contains `{ "host": ..., "port": ... }` — we TCP-connect,
+/// run the DAP handshake, then forward all child events (especially `stopped`) under
+/// the parent session ID so the rest of the system sees them as if they came from the
+/// parent session.
+async fn attach_debugpy_child(
+    host: String,
+    port: u16,
+    attach_config: Value,
+    hub: Arc<Hub>,
+    session_id: String,
+    stopped_tx: Arc<tokio::sync::watch::Sender<u32>>,
+    last_stopped: Arc<RwLock<Option<Value>>>,
+) -> Result<()> {
+    // Give the adapter a moment to register the child target
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    info!("[{session_id}] Attaching to child subprocess via adapter TCP {host}:{port}");
+
+    let stream = tokio::net::TcpStream::connect(format!("{host}:{port}")).await
+        .context("child debugpy TCP connect")?;
+
+    let (child_event_tx, mut child_event_rx) = mpsc::channel::<Value>(256);
+    let child_client = DapClient::from_tcp(stream, child_event_tx);
+
+    // Pipeline initialize + attach + configurationDone without waiting for intermediate
+    // responses.  The debugpy adapter requires `attach` to be in-flight alongside
+    // `initialize` — if we await the `initialize` response first, the adapter never
+    // completes the child session setup (no `initialized` event arrives).
+    // Using notify() for all three matches how VS Code's Python extension pipelines
+    // these requests.
+    child_client.notify("initialize", Some(serde_json::json!({
+        "clientID": "debugium-child",
+        "adapterID": "debugpy",
+        "linesStartAt1": true,
+        "columnsStartAt1": true,
+        "pathFormat": "path",
+    }))).await.context("child initialize")?;
+    child_client.notify("attach", Some(attach_config)).await.context("child attach")?;
+    child_client.notify("configurationDone", None).await.context("child configurationDone")?;
+
+    // Wait for `initialized` event (confirming the child process connected to the adapter)
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match tokio::time::timeout_at(deadline, child_event_rx.recv()).await {
+            Ok(Some(ev)) if ev.get("event").and_then(|v| v.as_str()) == Some("initialized") => break,
+            Ok(Some(_)) => {}  // skip telemetry / responses / intermediate events
+            Ok(None) | Err(_) => {
+                return Err(anyhow::anyhow!("child debugpy closed before initialized"));
+            }
+        }
+    }
+
+    info!("[{session_id}] Child debugpy attached, forwarding events");
+
+    // 4. Forward child events to hub under parent session ID
+    let hub2 = hub;
+    let sid = session_id;
+    tokio::spawn(async move {
+        while let Some(event) = child_event_rx.recv().await {
+            let ev_name = event.get("event").and_then(|v| v.as_str()).unwrap_or("?");
+            info!("[{sid}] child debugpy event: {ev_name}");
+
+            if ev_name == "stopped" {
+                *last_stopped.write().await = Some(event.clone());
+                stopped_tx.send_modify(|n| *n = n.wrapping_add(1));
+                let thread_id = event.get("body").and_then(|b| b.get("threadId"))
+                    .and_then(Value::as_u64).unwrap_or(1) as u32;
+                let reason = event.get("body").and_then(|b| b.get("reason"))
+                    .and_then(Value::as_str).unwrap_or("").to_string();
+                broadcast_json(&hub2, &sid, event.clone()).await;
+                enrich_stopped(&hub2, &child_client, &sid, None, thread_id, &reason).await;
+            } else if ev_name == "continued" {
+                *last_stopped.write().await = None;
+                broadcast_json(&hub2, &sid, event).await;
+            } else {
+                broadcast_json(&hub2, &sid, event).await;
+            }
+        }
+        info!("[{sid}] child debugpy session closed");
     });
 
     Ok(())

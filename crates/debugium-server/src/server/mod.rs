@@ -45,6 +45,7 @@ pub async fn start(
         .route("/state", get(routes::state_handler))
         .route("/timeline", get(routes::timeline_handler))
         .route("/watches", get(routes::watches_handler))
+        .route("/mcp-proxy", post(routes::mcp_proxy_handler))
         .fallback_service(ServeDir::new(&static_dir))
         .layer(CorsLayer::permissive())
         .with_state(state);
@@ -95,6 +96,7 @@ pub async fn start_background(
         .route("/state", axum::routing::get(routes::state_handler))
         .route("/timeline", axum::routing::get(routes::timeline_handler))
         .route("/watches", axum::routing::get(routes::watches_handler))
+        .route("/mcp-proxy", axum::routing::post(routes::mcp_proxy_handler))
         .fallback_service(tower_http::services::ServeDir::new(&static_dir))
         .layer(tower_http::cors::CorsLayer::permissive())
         .with_state(state);
