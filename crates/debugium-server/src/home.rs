@@ -16,11 +16,12 @@ impl DebugiumHome {
         Ok(Self { path })
     }
 
-    /// Write the server port to `~/.debugium/port` atomically.
+    /// Write the server port + PID to `~/.debugium/port` atomically.
     pub fn write_port(&self, port: u16) {
         let port_path = self.path.join("port");
         let tmp_path = self.path.join("port.tmp");
-        if let Err(e) = std::fs::write(&tmp_path, format!("{}\n", port)) {
+        let pid = std::process::id();
+        if let Err(e) = std::fs::write(&tmp_path, format!("{port}\n{pid}\n")) {
             tracing::warn!("Failed to write port tmp file: {e}");
             return;
         }
@@ -33,6 +34,32 @@ impl DebugiumHome {
     pub fn remove_port(&self) {
         let port_path = self.path.join("port");
         let _ = std::fs::remove_file(&port_path);
+    }
+
+    /// Read port from `~/.debugium/port`, validating the PID is still alive.
+    /// Returns None if file missing, parse error, or owning process is dead.
+    pub fn read_port(&self) -> Option<u16> {
+        let content = std::fs::read_to_string(self.path.join("port")).ok()?;
+        let mut lines = content.lines();
+        let port: u16 = lines.next()?.trim().parse().ok()?;
+        if let Some(pid_str) = lines.next() {
+            if let Ok(pid) = pid_str.trim().parse::<u32>() {
+                // Check if the process is still alive (signal 0 = existence check)
+                #[cfg(unix)]
+                {
+                    use std::os::unix::process::CommandExt;
+                    // kill(pid, 0) returns 0 if process exists
+                    let alive = unsafe { libc::kill(pid as i32, 0) } == 0;
+                    if !alive {
+                        // Stale port file — clean it up
+                        let _ = std::fs::remove_file(self.path.join("port"));
+                        return None;
+                    }
+                }
+                let _ = pid; // suppress unused on non-unix
+            }
+        }
+        Some(port)
     }
 
     /// Path to the log file: `~/.debugium/debugium.log`.

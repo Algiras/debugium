@@ -7,21 +7,40 @@ pub fn resolve_port(opt: Option<u16>) -> Result<u16> {
     if let Some(p) = opt {
         return Ok(p);
     }
-    let path = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("no home dir"))?
-        .join(".debugium/port");
-    Ok(std::fs::read_to_string(&path)?.trim().parse()?)
+    let home = crate::home::DebugiumHome::open()?;
+    home.read_port().ok_or_else(|| anyhow::anyhow!(
+        "No running Debugium server found (~/.debugium/port missing or stale).\n\
+         Start one with: debugium launch <program>"
+    ))
+}
+
+// ── Path helpers ─────────────────────────────────────────────────────────────
+
+fn short_path(path: &str) -> &str {
+    // Show just filename for display; full path in --json mode
+    path.rsplit('/').next().unwrap_or(path)
 }
 
 // ── HTTP helper ──────────────────────────────────────────────────────────────
 
 async fn call(port: u16, tool: &str, args: Value) -> Result<String> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
     let resp = client
         .post(format!("http://127.0.0.1:{port}/mcp-proxy"))
         .json(&json!({ "tool": tool, "args": args }))
         .send()
-        .await?;
+        .await
+        .map_err(|e| {
+            if e.is_connect() {
+                anyhow::anyhow!("Cannot connect to Debugium server on port {port}. Is it running?")
+            } else if e.is_timeout() {
+                anyhow::anyhow!("Request to Debugium server timed out (port {port})")
+            } else {
+                anyhow::anyhow!("HTTP error: {e}")
+            }
+        })?;
     let body: Value = resp.json().await?;
     if body["ok"].as_bool() == Some(true) {
         Ok(body["result"].as_str().unwrap_or("{}").to_string())
@@ -69,7 +88,7 @@ pub async fn sessions(opts: Opts) -> Result<()> {
             let adapter = s["adapter"].as_str().unwrap_or("?");
             let program = s["program"].as_str().unwrap_or("?");
             let status = s.get("status").and_then(Value::as_str).unwrap_or("running");
-            println!("  [{id}]  {adapter}  {program}  {status}");
+            println!("  [{id}]  {adapter}  {}  {status}", short_path(program));
         }
     });
     Ok(())
@@ -160,19 +179,31 @@ pub async fn bp_list(opts: Opts) -> Result<()> {
     )
     .await?;
     output(&raw, opts.json, |v| {
-        // Returns {"breakpoints": {file: [line, ...]}}
+        // Returns {"breakpoints": {file: [BpSpec, ...]}} where BpSpec is {"line":N} or {"line":N,"condition":"..."}
         if let Some(obj) = v["breakpoints"].as_object() {
             if obj.is_empty() {
                 println!("  (no breakpoints)");
             }
-            for (file, lines) in obj {
-                let ls: Vec<String> = lines
+            for (file, specs) in obj {
+                let ls: Vec<String> = specs
                     .as_array()
                     .unwrap_or(&vec![])
                     .iter()
-                    .map(|l| l.to_string())
+                    .map(|bp| {
+                        if let Some(line) = bp["line"].as_u64() {
+                            if let Some(cond) = bp.get("condition").and_then(Value::as_str) {
+                                format!("{line} if {cond}")
+                            } else {
+                                line.to_string()
+                            }
+                        } else if let Some(n) = bp.as_u64() {
+                            n.to_string()
+                        } else {
+                            bp.to_string()
+                        }
+                    })
                     .collect();
-                println!("  {file}: {}", ls.join(", "));
+                println!("  {}: {}", short_path(file), ls.join(", "));
             }
         } else {
             println!("{v}");
@@ -371,36 +402,55 @@ pub async fn context(opts: Opts, compact: bool) -> Result<()> {
     )
     .await?;
     output(&raw, opts.json, |v| {
-        if let Some(paused) = v["paused_at"].as_str() {
+        let paused = v["paused_at"].as_str().unwrap_or("");
+        let stack = v["call_stack"].as_array();
+        let has_stack = stack.map(|a| !a.is_empty()).unwrap_or(false);
+
+        if paused.is_empty() && !has_stack {
+            println!("  (program not paused — may have terminated)");
+            return;
+        }
+
+        if !paused.is_empty() {
             println!("── Paused at ──");
             println!("  {paused}");
         }
-        if let Some(stack) = v["call_stack"].as_array() {
+        if let Some(arr) = stack {
             println!("── Stack ──");
-            for (i, f) in stack.iter().enumerate() {
+            for (i, f) in arr.iter().enumerate() {
                 println!("  #{i}  {f}", f = f.as_str().unwrap_or("?"));
             }
         }
         if let Some(locals) = v["locals"].as_object() {
-            println!("── Locals ──");
-            for (name, value) in locals {
-                println!("  {name} = {value}");
+            if !locals.is_empty() {
+                println!("── Locals ──");
+                for (name, value) in locals {
+                    println!("  {name} = {value}");
+                }
             }
         }
         if let Some(src) = v["source_window"].as_str() {
-            println!("── Source ──");
-            println!("{src}");
+            if !src.is_empty() {
+                println!("── Source ──");
+                println!("{src}");
+            }
         }
         if let Some(bps) = v["breakpoints"].as_object() {
-            println!("── Breakpoints ──");
-            for (file, lines) in bps {
-                let ls: Vec<String> = lines
-                    .as_array()
-                    .unwrap_or(&vec![])
-                    .iter()
-                    .map(|l| l.to_string())
-                    .collect();
-                println!("  {file}: {}", ls.join(", "));
+            if !bps.is_empty() {
+                println!("── Breakpoints ──");
+                for (file, lines) in bps {
+                    let ls: Vec<String> = lines
+                        .as_array()
+                        .unwrap_or(&vec![])
+                        .iter()
+                        .map(|bp| {
+                            bp["line"].as_u64().map(|n| n.to_string())
+                                .or_else(|| bp.as_u64().map(|n| n.to_string()))
+                                .unwrap_or_else(|| bp.to_string())
+                        })
+                        .collect();
+                    println!("  {}: {}", short_path(file), ls.join(", "));
+                }
             }
         }
     });

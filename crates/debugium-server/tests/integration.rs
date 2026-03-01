@@ -1132,9 +1132,10 @@ fn m6_port_file_written() {
         .join(".debugium/port");
     assert!(port_file.exists(), "port file not found at {port_file:?}");
     let content = std::fs::read_to_string(&port_file).unwrap_or_default();
+    let first_line = content.lines().next().unwrap_or("");
     assert!(
-        content.trim().parse::<u16>().is_ok(),
-        "port file doesn't contain a port number: '{content}'"
+        first_line.trim().parse::<u16>().is_ok(),
+        "port file first line doesn't contain a port number: '{content}'"
     );
 }
 
