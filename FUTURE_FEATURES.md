@@ -23,10 +23,10 @@ Ideas for future Debugium improvements, especially for LLM-driven debugging work
 - Auto-generate a minimal code patch, surface it in a diff panel
 - One-click apply with undo support
 
-## Structured Variable Diffs
-- `get_timeline` already includes `changed_vars` per entry
-- Add a "variable history" view: click a variable → see its value at every timeline step
-- Sparkline / heatmap for numeric variables over time
+## ~~Structured Variable Diffs~~ ✅ Shipped
+- `get_timeline` records `changed_vars` per stop
+- `get_variable_history(name)` traces a variable's value across all timeline stops
+- Sparkline / heatmap for numeric variables over time (still future)
 
 ## Multi-Process / Multi-Thread Support
 - Track per-thread timelines independently

@@ -13,14 +13,19 @@ Debug Python, JavaScript/TypeScript, and Rust programs from your browser — wit
 
 ## Features
 
-- **Real-time web UI** — source viewer, breakpoints, variables, call stack, console
+- **Real-time web UI** — source viewer, breakpoints, variables, call stack, console, timeline, watch expressions, findings
 - **Multi-language** — Python (debugpy), Node/TypeScript (js-debug), Rust (lldb-dap)
-- **MCP integration** — expose your debug session as tools for Claude or any LLM
+- **MCP integration** — 40+ tools exposing the full debug session to Claude or any LLM
 - **Multi-session** — debug multiple programs simultaneously
+- **Execution timeline** — every stop recorded with changed variables and stack summary
+- **Watch expressions** — evaluated automatically at every breakpoint
+- **Annotations & findings** — LLM (or you) pin notes to source lines and record conclusions
+- **Conditional breakpoints** — break only when an expression is true
 - **Keyboard shortcuts** — F5 continue, F10 step over, F11 step in, Shift+F11 step out
 - **Dark / light mode** toggle
 - **Variable search** filter
-- **Breakpoint list** panel with click-to-navigate
+- **Panel collapse** — resize or hide any panel
+- **Auto-reconnect** — UI reconnects to the server after a dropped WebSocket
 
 ---
 
@@ -79,7 +84,7 @@ debugium launch dist/app.js --adapter node
 
 ```bash
 cargo build
-debugium launch target/debug/my_binary --adapter rust
+debugium launch target/debug/my_binary --adapter lldb
 ```
 
 ### Set initial breakpoints
@@ -92,23 +97,27 @@ debugium launch my_script.py --adapter python \
 
 ### Enable LLM / MCP integration
 
-```bash
-# Launch with MCP stdio server — pipe into Claude Code
-debugium launch my_script.py --adapter python --mcp
-```
-
-Or add to your `claude_desktop_config.json`:
+Add a `.mcp.json` to your project root (Claude Code picks this up automatically):
 
 ```json
 {
   "mcpServers": {
     "debugium": {
       "command": "debugium",
-      "args": ["mcp", "--port", "7331"]
+      "args": ["mcp"]
     }
   }
 }
 ```
+
+Then launch the session normally — the MCP server connects to whichever port is active:
+
+```bash
+debugium launch my_script.py --adapter python --breakpoint /abs/path/my_script.py:42
+```
+
+Claude Code will now have access to all Debugium MCP tools. See [CLAUDE.md](CLAUDE.md) for
+the recommended workflow and [SKILL.md](SKILL.md) for the full tool reference.
 
 ---
 
@@ -192,19 +201,26 @@ debugium bp clear
 
 ## MCP Tools
 
-When connected via MCP, the following tools are available to your LLM:
+When connected via MCP, 40+ tools are available. Key ones:
 
-| Tool | Description |
-|------|-------------|
-| `get_debug_context` | Paused location, locals, call stack, source window |
-| `dap_request` | Send any raw DAP command |
-| `set_breakpoint` | Set a breakpoint at file:line |
-| `get_console_output` | Read recent program stdout/stderr |
-| `list_sessions` | List running debug sessions |
-| `annotate` | Add inline gutter annotation in the UI |
-| `add_finding` | Post a finding to the Findings panel |
-| `step_until` | Step until a condition is true |
-| `run_until_exception` | Continue until an exception is raised |
+| Category | Tools |
+|----------|-------|
+| **Orient** | `get_debug_context` ★ (paused location + locals + stack + source in one call) |
+| **Breakpoints** | `set_breakpoint`, `set_breakpoints`, `list_breakpoints`, `clear_breakpoints`, `set_function_breakpoints`, `set_exception_breakpoints` |
+| **Execution** | `continue_execution`, `step_over`, `step_in`, `step_out`, `pause`, `disconnect` |
+| **Inspection** | `get_stack_trace`, `get_scopes`, `get_variables`, `evaluate`, `get_threads`, `get_source` |
+| **Output** | `get_console_output`, `wait_for_output` (with `from_line` to avoid stale matches) |
+| **History** | `get_timeline`, `get_variable_history` (traces a variable across all stops) |
+| **Annotations** | `annotate`, `get_annotations`, `add_finding`, `get_findings` |
+| **Watches** | `add_watch`, `remove_watch`, `get_watches` |
+| **Compound** | `step_until`, `run_until_exception` |
+| **Session** | `get_sessions`, `list_sessions` |
+
+> **Note**: `step_over`, `step_in`, and `step_out` are **blocking** — they wait for the
+> adapter to pause before returning. Safe to chain back-to-back without sleeps.
+> `continue_execution` returns `console_line_count` for use with `wait_for_output`.
+
+See [SKILL.md](SKILL.md) for the full reference with input schemas.
 
 ---
 
@@ -230,9 +246,9 @@ debugium-server (Axum)
 └── MCP stdio — JSON-RPC 2.0 server for LLM tool integration
 
 debugium-ui (Leptos + WASM)
-├── CodeMirror 6 — source viewer with breakpoint gutters + exec arrow
-├── Reactive panels — Variables, Stack, Breakpoints, Findings, Watch, Console
-└── WebSocket client — receives events, sends DAP commands
+├── CodeMirror 6 — source viewer with breakpoint gutters + exec arrow + LLM annotations
+├── Reactive panels — Variables, Stack, Breakpoints, Findings, Watch, Timeline, Console
+└── WebSocket client — receives events, sends DAP commands, auto-reconnects
 ```
 
 ---
