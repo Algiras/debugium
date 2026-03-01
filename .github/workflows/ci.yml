@@ -50,6 +50,14 @@ jobs:
           Copy-Item crates/debugium-ui/pkg/debugium_ui.js      crates/debugium-ui/dist/pkg/
           Copy-Item crates/debugium-ui/pkg/debugium_ui_bg.wasm crates/debugium-ui/dist/pkg/
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install debugpy
+        run: pip install debugpy
+
       - name: Build server
         run: cargo build -p debugium-server --release
 
