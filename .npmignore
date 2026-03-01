@@ -1,0 +1,11 @@
+# Only .claude-plugin/, skills/, and .mcp.json are published (see package.json "files")
+# Everything else is excluded by default when "files" is set.
+# This file exists to ensure target/, crates/, tests/ etc. are never accidentally included.
+crates/
+target/
+tests/
+docs/
+.github/
+.venv/
+*.tar.gz
+*.png

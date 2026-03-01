@@ -1,0 +1,31 @@
+{
+  "name": "@algiras/debugium",
+  "version": "0.1.0",
+  "description": "Claude Code plugin for AI-driven debugging of Python, JavaScript, TypeScript, and Rust via DAP adapters and MCP tools.",
+  "license": "MIT",
+  "author": {
+    "name": "Algiras"
+  },
+  "keywords": [
+    "claude-plugin",
+    "debugger",
+    "dap",
+    "mcp",
+    "python",
+    "rust",
+    "javascript",
+    "typescript",
+    "breakpoints",
+    "llm"
+  ],
+  "homepage": "https://github.com/Algiras/debugium",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Algiras/debugium.git"
+  },
+  "files": [
+    ".claude-plugin",
+    "skills",
+    ".mcp.json"
+  ]
+}
