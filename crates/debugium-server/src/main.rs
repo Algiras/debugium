@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
 
+mod ctl;
 mod dap;
 mod home;
 mod mcp;
@@ -88,6 +89,124 @@ enum Commands {
         #[arg(long, default_value = "7331")]
         port: u16,
     },
+
+    // ── Control subcommands (talk to a running server) ────────────────────
+
+    /// List active debug sessions
+    Sessions {
+        #[arg(long)] port: Option<u16>,
+        #[arg(long, default_value = "default")] session: String,
+        #[arg(long)] json: bool,
+    },
+
+    /// List threads in the current session
+    Threads {
+        #[arg(long)] port: Option<u16>,
+        #[arg(long, default_value = "default")] session: String,
+        #[arg(long)] json: bool,
+    },
+
+    /// Show the call stack
+    Stack {
+        #[arg(long)] port: Option<u16>,
+        #[arg(long, default_value = "default")] session: String,
+        #[arg(long)] json: bool,
+        #[arg(long, default_value_t = 1)] thread_id: u64,
+    },
+
+    /// Manage breakpoints
+    Bp {
+        #[command(subcommand)] cmd: BpCmd,
+        #[arg(long)] port: Option<u16>,
+        #[arg(long, default_value = "default")] session: String,
+        #[arg(long)] json: bool,
+    },
+
+    /// Resume execution (continue)
+    Continue {
+        #[arg(long)] port: Option<u16>,
+        #[arg(long, default_value = "default")] session: String,
+        #[arg(long)] json: bool,
+        #[arg(long, default_value_t = 1)] thread_id: u64,
+    },
+
+    /// Single-step: over | in | out
+    Step {
+        /// Step kind: over, in, or out
+        kind: String,
+        #[arg(long)] port: Option<u16>,
+        #[arg(long, default_value = "default")] session: String,
+        #[arg(long)] json: bool,
+        #[arg(long, default_value_t = 1)] thread_id: u64,
+    },
+
+    /// Show local variables
+    Vars {
+        #[arg(long)] port: Option<u16>,
+        #[arg(long, default_value = "default")] session: String,
+        #[arg(long)] json: bool,
+        #[arg(long)] frame_id: Option<u64>,
+    },
+
+    /// Evaluate an expression
+    Eval {
+        /// Expression to evaluate
+        expression: String,
+        #[arg(long)] port: Option<u16>,
+        #[arg(long, default_value = "default")] session: String,
+        #[arg(long)] json: bool,
+        #[arg(long)] frame_id: Option<u64>,
+    },
+
+    /// Show a source file (windowed if --line given)
+    Source {
+        /// Path to the source file
+        path: String,
+        #[arg(long)] port: Option<u16>,
+        #[arg(long, default_value = "default")] session: String,
+        #[arg(long)] json: bool,
+        #[arg(long)] line: Option<u32>,
+    },
+
+    /// Full debug snapshot
+    Context {
+        #[arg(long)] port: Option<u16>,
+        #[arg(long, default_value = "default")] session: String,
+        #[arg(long)] json: bool,
+        #[arg(long)] compact: bool,
+    },
+
+    /// Add a gutter annotation to the UI
+    Annotate {
+        /// FILE:LINE location
+        location: String,
+        /// Annotation message
+        message: String,
+        #[arg(long)] port: Option<u16>,
+        #[arg(long, default_value = "default")] session: String,
+        #[arg(long)] json: bool,
+        #[arg(long)] color: Option<String>,
+    },
+
+    /// Add a finding to the findings panel
+    Finding {
+        /// Finding message
+        message: String,
+        #[arg(long)] port: Option<u16>,
+        #[arg(long, default_value = "default")] session: String,
+        #[arg(long)] json: bool,
+        #[arg(long)] level: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum BpCmd {
+    /// Set breakpoints at FILE:LINE locations
+    Set { locations: Vec<String> },
+    /// List current breakpoints
+    List,
+    /// Clear all breakpoints
+    Clear,
 }
 
 #[tokio::main]
@@ -196,7 +315,7 @@ async fn main() -> Result<()> {
 
             // Optionally run MCP server on stdin/stdout
             if mcp {
-                mcp::serve(registry, hub).await?;
+                mcp::serve(registry, hub, None).await?;
             } else {
                 #[cfg(unix)]
                 {
@@ -228,18 +347,62 @@ async fn main() -> Result<()> {
                             tracing::error!("Web server error: {e}");
                         }
                     });
-                    mcp::serve(registry, hub).await?;
+                    mcp::serve(registry, hub, None).await?;
                 } else {
                     server::start(hub, registry, serve_port, static_dir, open_browser).await?;
                 }
             }
         }
 
-        Commands::Mcp { port: _port } => {
-            // Standalone MCP server — registry is empty but tools still work via HTTP proxy
+        Commands::Mcp { port } => {
+            // Standalone MCP server — proxies tool calls to a running Debugium server
             let hub = Hub::new();
             let registry = SessionRegistry::new();
-            mcp::serve(registry, hub).await?;
+            mcp::serve(registry, hub, Some(port)).await?;
+        }
+
+        // ── Control subcommands ───────────────────────────────────────────
+
+        Commands::Sessions { port, session, json } => {
+            ctl::sessions(ctl::Opts { port, session, json }).await?;
+        }
+        Commands::Threads { port, session, json } => {
+            ctl::threads(ctl::Opts { port, session, json }).await?;
+        }
+        Commands::Stack { port, session, json, thread_id } => {
+            ctl::stack(ctl::Opts { port, session, json }, thread_id).await?;
+        }
+        Commands::Bp { cmd, port, session, json } => {
+            let opts = ctl::Opts { port, session, json };
+            match cmd {
+                BpCmd::Set { locations } => ctl::bp_set(opts, locations).await?,
+                BpCmd::List => ctl::bp_list(opts).await?,
+                BpCmd::Clear => ctl::bp_clear(opts).await?,
+            }
+        }
+        Commands::Continue { port, session, json, thread_id } => {
+            ctl::resume(ctl::Opts { port, session, json }, thread_id).await?;
+        }
+        Commands::Step { kind, port, session, json, thread_id } => {
+            ctl::step(ctl::Opts { port, session, json }, &kind, thread_id).await?;
+        }
+        Commands::Vars { port, session, json, frame_id } => {
+            ctl::vars(ctl::Opts { port, session, json }, frame_id).await?;
+        }
+        Commands::Eval { expression, port, session, json, frame_id } => {
+            ctl::eval(ctl::Opts { port, session, json }, expression, frame_id).await?;
+        }
+        Commands::Source { path, port, session, json, line } => {
+            ctl::source(ctl::Opts { port, session, json }, path, line).await?;
+        }
+        Commands::Context { port, session, json, compact } => {
+            ctl::context(ctl::Opts { port, session, json }, compact).await?;
+        }
+        Commands::Annotate { location, message, port, session, json, color } => {
+            ctl::annotate(ctl::Opts { port, session, json }, location, message, color).await?;
+        }
+        Commands::Finding { message, port, session, json, level } => {
+            ctl::finding(ctl::Opts { port, session, json }, message, level).await?;
         }
     }
 

@@ -103,6 +103,84 @@ Or add to your `claude_desktop_config.json`:
 
 ---
 
+## CLI Control Commands
+
+Once a session is running (`debugium launch …`), you can drive it from a second terminal — or from an LLM agent — without touching the web UI.
+
+Port is auto-discovered from `~/.debugium/port`; override with `--port`.
+
+### Global flags (all subcommands)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--port PORT` | `~/.debugium/port` | Server port to connect to |
+| `--session ID` | `default` | Session to target |
+| `--json` | off | Print raw JSON instead of human-readable output |
+
+### Inspection
+
+```bash
+debugium sessions                  # list active sessions
+debugium threads                   # list threads
+debugium stack                     # show call stack
+debugium vars                      # show local variables (auto-resolves top frame)
+debugium vars --frame-id 2         # show variables for a specific frame
+debugium eval "len(fibs)"          # evaluate expression in top frame
+debugium eval "x + 1" --frame-id 2
+debugium source path/to/file.py    # print full source file
+debugium source path/to/file.py --line 43  # windowed ±10 lines with → marker
+debugium context                   # full snapshot: paused-at, stack, locals, source, breakpoints
+debugium context --compact         # same but truncated (3 frames, 10 vars)
+```
+
+### Breakpoints
+
+```bash
+debugium bp set FILE:LINE [FILE:LINE …]   # set breakpoints (replaces existing in that file)
+debugium bp list                          # list all breakpoints
+debugium bp clear                         # clear all breakpoints
+```
+
+### Execution control
+
+```bash
+debugium continue                  # resume execution
+debugium step over                 # step over (next line)
+debugium step in                   # step into a function call
+debugium step out                  # step out of current function
+```
+
+### UI annotations (visible in the web UI)
+
+```bash
+debugium annotate FILE:LINE "message" [--color info|warning|error]
+debugium finding "message"         [--level  info|warning|error]
+```
+
+### Example workflow
+
+```bash
+# Terminal A — start the session
+debugium launch tests/target_python.py --adapter python \
+  --breakpoint "$(pwd)/tests/target_python.py:43"
+
+# Terminal B (or LLM agent) — inspect and drive it
+debugium sessions
+debugium stack
+debugium vars
+debugium eval "len(fibs)"
+debugium bp set tests/target_python.py:49
+debugium continue                  # runs to line 49
+debugium vars
+debugium step over
+debugium context --json            # machine-readable snapshot
+debugium annotate tests/target_python.py:43 "called here" --color info
+debugium finding "fibs has 10 elements" --level info
+debugium bp clear
+```
+
+---
+
 ## MCP Tools
 
 When connected via MCP, the following tools are available to your LLM:
