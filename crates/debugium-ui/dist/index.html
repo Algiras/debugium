@@ -10,18 +10,19 @@
     <link
         href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
         rel="stylesheet">
-    <link rel="stylesheet" href="/style.css?h=a0deec7f">
+    <link rel="stylesheet" href="/style.css?h=4e284b84">
+    <!-- BUILD: after wasm-pack build, run: ./scripts/sync-ui.sh -->
     <!-- CodeMirror 6 — provides window.__cm_init / __cm_set_exec_line -->
-    <script type="module" src="/pkg/cm_init.js?h=10d3c521"></script>
+    <script type="module" src="/pkg/cm_init.js?h=ff45996d"></script>
     <!-- Leptos WASM bundle -->
-    <link rel="modulepreload" href="/pkg/debugium_ui.js?h=d6a18287">
-    <link rel="preload" href="/pkg/debugium_ui_bg.wasm?h=4759b9fd" as="fetch" type="application/wasm" crossorigin="">
+    <link rel="modulepreload" href="/pkg/debugium_ui.js?h=fcd80633">
+    <link rel="preload" href="/pkg/debugium_ui_bg.wasm?h=24ba1058" as="fetch" type="application/wasm" crossorigin="">
 </head>
 
 <body>
     <script type="module">
-        import init from '/pkg/debugium_ui.js?h=d6a18287';
-        await init('/pkg/debugium_ui_bg.wasm?h=4759b9fd');
+        import init from '/pkg/debugium_ui.js?h=fcd80633';
+        await init('/pkg/debugium_ui_bg.wasm?h=24ba1058');
     </script>
 </body>
 

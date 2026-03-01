@@ -262,7 +262,14 @@ pub fn App() -> impl IntoView {
         watches: RwSignal::new(vec![]),
         active_tab: RwSignal::new(None),
         bps_collapsed: RwSignal::new(true),
-        dark_mode: RwSignal::new(false),
+        dark_mode: RwSignal::new({
+            // Restore from localStorage
+            web_sys::window()
+                .and_then(|w| w.local_storage().ok().flatten())
+                .and_then(|s| s.get_item("debugium_dark_mode").ok().flatten())
+                .map(|v| v == "true")
+                .unwrap_or(false)
+        }),
         var_filter: RwSignal::new(String::new()),
     };
 
@@ -649,6 +656,12 @@ pub fn App() -> impl IntoView {
                     if light { let _ = el.class_list().add_1("light-mode"); }
                     else     { let _ = el.class_list().remove_1("light-mode"); }
                 }
+            }
+            // Persist to localStorage
+            if let Some(storage) = web_sys::window()
+                .and_then(|w| w.local_storage().ok().flatten())
+            {
+                let _ = storage.set_item("debugium_dark_mode", if light { "true" } else { "false" });
             }
         });
     }
@@ -1497,25 +1510,19 @@ fn Header(
                 >
                     <span class="btn-icon">"↺"</span>" Restart"
                 </button>
-                // Narrow mode toggle
-                <button
-                    class="debug-btn"
-                    style="margin-left: 8px; font-size: 10px; opacity: .6"
-                    title="Toggle narrow mode"
-                    on:click=move |_| layout.narrow_mode.update(|v| *v = !*v)
-                >"⊡"</button>
                 // Toggle console collapsed
                 <button
-                    class="collapse-btn"
+                    class="debug-btn btn-theme"
+                    style="margin-left: 8px; font-size: 11px;"
                     title="Toggle Debug Console"
                     on:click=move |_| layout.console_collapsed.update(|v| *v = !*v)
-                >"⊟"</button>
+                >{move || if layout.console_collapsed.get() { "Console ▸" } else { "Console ▾" }}</button>
                 // Dark mode toggle
                 <button
-                    class="collapse-btn"
+                    class="debug-btn btn-theme"
                     title="Toggle dark mode (Ctrl/⌘+D)"
                     on:click=move |_| layout.dark_mode.update(|v| *v = !*v)
-                >{move || if layout.dark_mode.get() { "🌙" } else { "☀" }}</button>
+                >{move || if layout.dark_mode.get() { "Dark" } else { "Light" }}</button>
             </div>
         </header>
     }
@@ -2491,7 +2498,7 @@ fn ConsolePanel(
                     title="Toggle break on uncaught exceptions"
                     on:click=do_exc_toggle
                 >
-                    {move || if exc_uncaught.get() { "⚡ uncaught" } else { "⚡ off" }}
+                    {move || if exc_uncaught.get() { "✕ uncaught" } else { "✕ off" }}
                 </button>
             </div>
             <Show when=move || !layout.console_collapsed.get()>

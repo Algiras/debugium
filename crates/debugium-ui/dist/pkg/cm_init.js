@@ -3,14 +3,81 @@
 // Leptos SourcePanel calls `window.cm_init(container, initialCode)` and
 // `window.cm_set_exec_line(lineNum)` via js_sys::Function.
 
-import { EditorState } from "https://esm.sh/@codemirror/state@6";
+import { EditorState, Compartment } from "https://esm.sh/@codemirror/state@6";
 import { EditorView, gutter, GutterMarker, lineNumbers, keymap } from "https://esm.sh/@codemirror/view@6";
 import { javascript } from "https://esm.sh/@codemirror/lang-javascript@6";
 import { python } from "https://esm.sh/@codemirror/lang-python@6";
 import { rust } from "https://esm.sh/@codemirror/lang-rust@6";
 import { oneDark } from "https://esm.sh/@codemirror/theme-one-dark@6";
+import { syntaxHighlighting, HighlightStyle } from "https://esm.sh/@codemirror/language@6";
+import { tags } from "https://esm.sh/@lezer/highlight@1";
 import { RangeSetBuilder } from "https://esm.sh/@codemirror/state@6";
 import { Decoration, ViewPlugin } from "https://esm.sh/@codemirror/view@6";
+
+// ─── Light theme (VS Code Light style) ──────────────────────────────────────
+
+const lightHighlight = HighlightStyle.define([
+    { tag: tags.keyword,        color: "#0000ff" },
+    { tag: tags.controlKeyword, color: "#af00db" },
+    { tag: tags.operatorKeyword,color: "#0000ff" },
+    { tag: tags.definitionKeyword, color: "#0000ff" },
+    { tag: tags.typeName,       color: "#267f99" },
+    { tag: tags.className,      color: "#267f99" },
+    { tag: tags.function(tags.variableName), color: "#795e26" },
+    { tag: tags.definition(tags.variableName), color: "#001080" },
+    { tag: tags.variableName,   color: "#001080" },
+    { tag: tags.propertyName,   color: "#001080" },
+    { tag: tags.comment,        color: "#008000", fontStyle: "italic" },
+    { tag: tags.lineComment,    color: "#008000", fontStyle: "italic" },
+    { tag: tags.blockComment,   color: "#008000", fontStyle: "italic" },
+    { tag: tags.string,         color: "#a31515" },
+    { tag: tags.number,         color: "#098658" },
+    { tag: tags.bool,           color: "#0000ff" },
+    { tag: tags.null,           color: "#0000ff" },
+    { tag: tags.self,           color: "#0000ff" },
+    { tag: tags.atom,           color: "#0000ff" },
+    { tag: tags.operator,       color: "#000000" },
+    { tag: tags.punctuation,    color: "#000000" },
+    { tag: tags.meta,           color: "#267f99" },
+    { tag: tags.regexp,         color: "#811f3f" },
+    { tag: tags.tagName,        color: "#800000" },
+    { tag: tags.attributeName,  color: "#ff0000" },
+    { tag: tags.attributeValue, color: "#0000ff" },
+    { tag: tags.heading,        color: "#0000ff", fontWeight: "bold" },
+]);
+
+const lightEditorTheme = EditorView.theme({
+    "&": { backgroundColor: "#ffffff", color: "#1e1e1e" },
+    ".cm-gutters": { backgroundColor: "#f0f0f0", color: "#999", borderRight: "1px solid #ddd" },
+    ".cm-activeLineGutter": { backgroundColor: "#e8e8e8" },
+    ".cm-activeLine": { backgroundColor: "rgba(0,0,0,.04)" },
+    ".cm-selectionBackground": { backgroundColor: "#add6ff !important" },
+    ".cm-cursor": { borderLeftColor: "#000" },
+    ".cm-exec-arrow": { color: "#c89800" },
+    ".cm-exec-line": { background: "rgba(255,204,0,0.18) !important" },
+}, { dark: false });
+
+const lightTheme = [lightEditorTheme, syntaxHighlighting(lightHighlight)];
+
+// ─── Theme compartment ──────────────────────────────────────────────────────
+
+const themeCompartment = new Compartment();
+
+function isLightMode() {
+    return document.documentElement.classList.contains("light-mode");
+}
+
+function currentTheme() {
+    return isLightMode() ? lightTheme : oneDark;
+}
+
+// Watch for light-mode class toggle on <html>
+const observer = new MutationObserver(() => {
+    if (activeView) {
+        activeView.dispatch({ effects: themeCompartment.reconfigure(currentTheme()) });
+    }
+});
+observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
 
 // ─── Execution marker (yellow arrow) ──────────────────────────────────────
 
@@ -226,7 +293,7 @@ function buildExtensions(path) {
         annGutter,
         execArrowGutter,
         execLinePlugin,
-        oneDark,
+        themeCompartment.of(currentTheme()),
         langExt(path),
         EditorView.editable.of(false),
         EditorView.theme({
