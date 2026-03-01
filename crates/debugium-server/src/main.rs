@@ -60,6 +60,10 @@ enum Commands {
         #[arg(short, long, value_name = "FILE:LINE")]
         breakpoint: Vec<String>,
 
+        /// Explicit path to a dap.json config file (alternative to --adapter <path>.json)
+        #[arg(long, value_name = "PATH")]
+        config: Option<PathBuf>,
+
         /// Also start the MCP stdio server (for Claude Code / LLM integration)
         #[arg(long)]
         mcp: bool,
@@ -266,6 +270,7 @@ async fn main() -> Result<()> {
             no_open_browser,
             static_dir,
             breakpoint,
+            config,
             mcp,
             log_level: _,
         } => {
@@ -273,25 +278,62 @@ async fn main() -> Result<()> {
             let hub = Hub::new();
             let registry = SessionRegistry::new();
 
-            let kind = AdapterKind::from_str(&adapter);
+            // Resolve adapter kind: --config > --adapter > auto-discovery > default
+            let kind = if let Some(ref cfg_path) = config {
+                AdapterKind::from_str(cfg_path.to_str().unwrap_or("dap.json"))
+            } else if adapter == "python" {
+                // Default value — try auto-discovery before falling back
+                auto_discover_adapter().unwrap_or_else(|| AdapterKind::from_str(&adapter))
+            } else {
+                AdapterKind::from_str(&adapter)
+            };
             let cwd = std::env::current_dir()?;
 
-            // Metals/TCP-attach creates session differently
-            let session = if let AdapterKind::Metals { port: dap_port } = &kind {
-                let addr: std::net::SocketAddr = format!("127.0.0.1:{dap_port}").parse()?;
-                Session::from_tcp("default".to_string(), addr, Adapter::new(kind.clone()), hub.clone())
-                    .await
-                    .map_err(|e| { tracing::error!("Failed to connect to Metals: {e}"); e })?
+            // Extract DapConfig breakpoints and exception filters if present
+            let dap_config_breakpoints = if let AdapterKind::DapConfig(ref cfg) = kind {
+                cfg.breakpoints.as_ref().map(|bps| parse_config_breakpoints(bps))
             } else {
-                let adapter_obj = Adapter::new(kind);
+                None
+            };
+            let dap_exception_filters = if let AdapterKind::DapConfig(ref cfg) = kind {
+                cfg.exception_breakpoints.clone()
+            } else {
+                None
+            };
+            let is_attach_mode = match &kind {
+                AdapterKind::DapConfig(cfg) => cfg.request == "attach",
+                _ => false,
+            };
+
+            // TCP-attach (Metals, DapConfig with host+port) creates session via from_tcp
+            let adapter_obj = Adapter::new(kind.clone());
+            let session = if adapter_obj.is_tcp_attach() {
+                let tcp_port = adapter_obj.tcp_port()
+                    .ok_or_else(|| anyhow::anyhow!("TCP attach mode requires a port"))?;
+                let host = adapter_obj.tcp_host();
+                let addr: std::net::SocketAddr = format!("{host}:{tcp_port}").parse()?;
+                Session::from_tcp("default".to_string(), addr, adapter_obj, hub.clone())
+                    .await
+                    .map_err(|e| { tracing::error!("Failed to connect to DAP server at {addr}: {e}"); e })?
+            } else {
                 Session::new("default".to_string(), adapter_obj, hub.clone())
                     .await
                     .map_err(|e| { tracing::error!("Failed to create session: {e}"); e })?
             };
             registry.insert(session.clone()).await;
 
-            // Parse breakpoints into (file, lines) pairs
-            let breakpoints = parse_breakpoints(&breakpoint);
+            // Parse CLI breakpoints and merge with dap.json breakpoints
+            let mut breakpoints = parse_breakpoints(&breakpoint);
+            if let Some(cfg_bps) = dap_config_breakpoints {
+                for (file, lines) in cfg_bps {
+                    let entry = breakpoints.iter_mut().find(|(f, _)| f == &file);
+                    if let Some((_, existing)) = entry {
+                        existing.extend(lines);
+                    } else {
+                        breakpoints.push((file, lines));
+                    }
+                }
+            }
 
             let static_dir = static_dir.unwrap_or_else(|| {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../crates/debugium-ui/dist")
@@ -314,13 +356,20 @@ async fn main() -> Result<()> {
             eprintln!("[Debugium] UI ready at http://localhost:{actual_port}");
             eprintln!("[Debugium] Session: default  program: {}", program.display());
 
-            // DAP: proper handshake in background (launch → initialized event → setBreakpoints → configDone)
+            // DAP handshake in background — attach or launch depending on mode
             let session2 = session.clone();
             let program2 = program.clone();
             let cwd2 = cwd.clone();
             tokio::spawn(async move {
-                if let Err(e) = session2.configure_and_launch(program2, cwd2, &breakpoints).await {
-                    tracing::error!("configure_and_launch failed: {e}");
+                if is_attach_mode {
+                    let filters = dap_exception_filters.as_deref();
+                    if let Err(e) = session2.configure_and_attach(program2, cwd2, &breakpoints, filters).await {
+                        tracing::error!("configure_and_attach failed: {e}");
+                    }
+                } else {
+                    if let Err(e) = session2.configure_and_launch(program2, cwd2, &breakpoints).await {
+                        tracing::error!("configure_and_launch failed: {e}");
+                    }
                 }
             });
 
@@ -418,6 +467,32 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Auto-discover a dap.json config file in cwd or .debugium/ directory.
+fn auto_discover_adapter() -> Option<AdapterKind> {
+    let candidates = ["dap.json", ".debugium/dap.json"];
+    for c in &candidates {
+        let path = PathBuf::from(c);
+        if path.exists() {
+            eprintln!("[Debugium] Auto-discovered config: {c}");
+            return Some(AdapterKind::from_str(c));
+        }
+    }
+    None
+}
+
+/// Parse breakpoints from dap.json config format: [{file, line, condition?}]
+fn parse_config_breakpoints(bps: &[serde_json::Value]) -> Vec<(String, Vec<u32>)> {
+    let mut map: std::collections::HashMap<String, Vec<u32>> = std::collections::HashMap::new();
+    for bp in bps {
+        let file = bp.get("file").and_then(serde_json::Value::as_str);
+        let line = bp.get("line").and_then(serde_json::Value::as_u64);
+        if let (Some(file), Some(line)) = (file, line) {
+            map.entry(file.to_string()).or_default().push(line as u32);
+        }
+    }
+    map.into_iter().collect()
 }
 
 fn parse_breakpoints(raw: &[String]) -> Vec<(String, Vec<u32>)> {
