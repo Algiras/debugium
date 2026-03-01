@@ -521,13 +521,14 @@ fn tool_list() -> Value {
             },
             {
                 "name": "wait_for_output",
-                "description": "Wait until the program prints a line matching a regex pattern (or timeout). Useful for output-driven debugging loops.",
+                "description": "Wait until the program prints a line matching a regex pattern (or timeout). Pass from_line=console_line_count from continue_execution to only match output printed after the resume.",
                 "inputSchema": {
                     "type": "object",
                     "required": ["pattern"],
                     "properties": {
                         "pattern":      { "type": "string" },
                         "timeout_secs": { "type": "integer", "description": "Max seconds to wait. Default 10." },
+                        "from_line":    { "type": "integer", "description": "Skip first N console lines. Use console_line_count from continue_execution to avoid stale matches." },
                         "session_id":   { "type": "string" }
                     }
                 }
@@ -777,32 +778,44 @@ pub async fn dispatch_tool(
             let s = session.ok_or_else(|| anyhow::anyhow!("Session not found"))?;
             let thread_id = args.get("thread_id").and_then(Value::as_u64).unwrap_or(1) as u32;
             broadcast_command(hub, session_id, "continue").await;
-            let resp = s.client.request("continue", Some(json!({ "threadId": thread_id }))).await?;
-            Ok(format!("Continued thread {thread_id}\n{}", serde_json::to_string_pretty(&resp)?))
+            // Capture line count BEFORE continuing so the LLM can pass it to wait_for_output.
+            let console_line_count = s.console_lines.read().await.len();
+            s.client.request("continue", Some(json!({ "threadId": thread_id }))).await?;
+            Ok(serde_json::to_string_pretty(&json!({
+                "status": "running",
+                "console_line_count": console_line_count,
+                "hint": "Pass console_line_count as from_line to wait_for_output to only match new output."
+            }))?)
         }
 
         "step_over" => {
             let s = session.ok_or_else(|| anyhow::anyhow!("Session not found"))?;
             let thread_id = require_u32(&args, "thread_id")?;
             broadcast_command(hub, session_id, "next").await;
-            let resp = s.client.request("next", Some(json!({ "threadId": thread_id }))).await?;
-            Ok(format!("Step over on thread {thread_id}\n{}", serde_json::to_string_pretty(&resp)?))
+            let mut stopped_rx = s.stopped_tx.subscribe();
+            s.client.request("next", Some(json!({ "threadId": thread_id }))).await?;
+            let loc = await_stopped(&s, &mut stopped_rx).await;
+            Ok(format!("Stepped over → {loc}"))
         }
 
         "step_in" => {
             let s = session.ok_or_else(|| anyhow::anyhow!("Session not found"))?;
             let thread_id = require_u32(&args, "thread_id")?;
             broadcast_command(hub, session_id, "stepIn").await;
-            let resp = s.client.request("stepIn", Some(json!({ "threadId": thread_id }))).await?;
-            Ok(format!("Step in on thread {thread_id}\n{}", serde_json::to_string_pretty(&resp)?))
+            let mut stopped_rx = s.stopped_tx.subscribe();
+            s.client.request("stepIn", Some(json!({ "threadId": thread_id }))).await?;
+            let loc = await_stopped(&s, &mut stopped_rx).await;
+            Ok(format!("Stepped in → {loc}"))
         }
 
         "step_out" => {
             let s = session.ok_or_else(|| anyhow::anyhow!("Session not found"))?;
             let thread_id = require_u32(&args, "thread_id")?;
             broadcast_command(hub, session_id, "stepOut").await;
-            let resp = s.client.request("stepOut", Some(json!({ "threadId": thread_id }))).await?;
-            Ok(format!("Step out on thread {thread_id}\n{}", serde_json::to_string_pretty(&resp)?))
+            let mut stopped_rx = s.stopped_tx.subscribe();
+            s.client.request("stepOut", Some(json!({ "threadId": thread_id }))).await?;
+            let loc = await_stopped(&s, &mut stopped_rx).await;
+            Ok(format!("Stepped out → {loc}"))
         }
 
         "pause" => {
@@ -1421,12 +1434,15 @@ pub async fn dispatch_tool(
             let re = regex::Regex::new(pattern)
                 .map_err(|e| anyhow::anyhow!("invalid regex: {e}"))?;
             let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
+            // from_line: skip the first N lines of the buffer — use the console_line_count from
+            // continue_execution to avoid matching output printed before the current run.
+            let from_line = args.get("from_line").and_then(Value::as_u64).unwrap_or(0) as usize;
             broadcast_llm_query(hub, session_id, "wait_for_output", pattern).await;
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout);
             loop {
                 {
                     let lines = s.console_lines.read().await;
-                    if let Some(line) = lines.iter().rev().find(|l| re.is_match(l)) {
+                    if let Some(line) = lines.iter().skip(from_line).find(|l| re.is_match(l)) {
                         let matched_line = line.clone();
                         drop(lines);
                         let detail = format!("matched: \"{}\"", matched_line.chars().take(60).collect::<String>());
@@ -1453,6 +1469,27 @@ fn require_u32(args: &Value, key: &str) -> Result<u32> {
         .and_then(Value::as_u64)
         .map(|n| n as u32)
         .ok_or_else(|| anyhow::anyhow!("`{key}` is required and must be an integer"))
+}
+
+/// Wait for the next stopped event (up to 15 s) and return a human-readable status string.
+/// Subscribe BEFORE sending the DAP command to guarantee the event is never missed.
+async fn await_stopped(
+    session: &Arc<crate::dap::session::Session>,
+    rx: &mut tokio::sync::watch::Receiver<u32>,
+) -> String {
+    match tokio::time::timeout(std::time::Duration::from_secs(15), rx.changed()).await {
+        Err(_) => return "timed out waiting for stop".to_string(),
+        Ok(_) => {}
+    }
+    let guard = session.last_stopped.read().await;
+    guard.as_ref()
+        .and_then(|ev| ev.get("body"))
+        .map(|b| {
+            let reason = b.get("reason").and_then(Value::as_str).unwrap_or("step");
+            let thread = b.get("threadId").and_then(Value::as_u64).unwrap_or(1);
+            format!("paused (reason={reason}, thread={thread}). Call get_debug_context for location.")
+        })
+        .unwrap_or_else(|| "paused. Call get_debug_context for location.".to_string())
 }
 
 /// Returns the threadId of the most recently stopped thread, falling back to 1.
