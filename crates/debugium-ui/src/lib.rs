@@ -90,6 +90,19 @@ pub struct SessionState {
     pub timeline: Vec<TimelineEntryUi>,
     /// last LLM query tool + detail, shown in the status bar
     pub last_llm_query: String,
+    /// per-session layout state (saved when switching away, restored when switching back)
+    pub saved_layout: SavedLayoutState,
+}
+
+/// Snapshot of per-session layout fields (saved/restored on session switch).
+#[derive(Clone, Debug, Default)]
+pub struct SavedLayoutState {
+    pub watches: Vec<String>,
+    pub active_tab: Option<String>,
+    pub var_filter: String,
+    pub console_collapsed: bool,
+    pub vars_collapsed: bool,
+    pub bps_collapsed: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -259,6 +272,48 @@ pub fn App() -> impl IntoView {
     provide_context(LastCompleted(last_completed));
     provide_context(LastEventSession(last_event_session));
     provide_context(layout.clone());
+
+    // ── Save/restore per-session layout state on session switch ──
+    {
+        let layout_sr = layout.clone();
+        let prev_session: RwSignal<Option<String>> = RwSignal::new(None);
+        Effect::new(move |_| {
+            let new_sid = active_session.get();
+            let old_sid = prev_session.get_untracked();
+            if new_sid == old_sid { return; }
+
+            // Save current signals → old session's saved_layout
+            if let Some(ref old) = old_sid {
+                session_data.update(|m| {
+                    if let Some(s) = m.get_mut(old) {
+                        s.saved_layout = SavedLayoutState {
+                            watches: layout_sr.watches.get_untracked(),
+                            active_tab: layout_sr.active_tab.get_untracked(),
+                            var_filter: layout_sr.var_filter.get_untracked(),
+                            console_collapsed: layout_sr.console_collapsed.get_untracked(),
+                            vars_collapsed: layout_sr.vars_collapsed.get_untracked(),
+                            bps_collapsed: layout_sr.bps_collapsed.get_untracked(),
+                        };
+                    }
+                });
+            }
+
+            // Restore from new session's saved_layout
+            if let Some(ref new) = new_sid {
+                let saved = session_data.get_untracked()
+                    .get(new).map(|s| s.saved_layout.clone())
+                    .unwrap_or_default();
+                layout_sr.watches.set(saved.watches);
+                layout_sr.active_tab.set(saved.active_tab);
+                layout_sr.var_filter.set(saved.var_filter);
+                layout_sr.console_collapsed.set(saved.console_collapsed);
+                layout_sr.vars_collapsed.set(saved.vars_collapsed);
+                layout_sr.bps_collapsed.set(saved.bps_collapsed);
+            }
+
+            prev_session.set(new_sid);
+        });
+    }
 
     let host = web_sys::window().unwrap().location().host().unwrap();
 
@@ -1065,7 +1120,15 @@ fn handle_envelope(
                     }
                 }
                 if cmd == "setBreakpoints" {
-                    if let Some(file) = state.pending_bp_file.take() {
+                    // Use pending_bp_file (set by UI-initiated commands), or fall back to
+                    // source.path injected by server (for CLI/MCP-initiated commands).
+                    let file = state.pending_bp_file.take()
+                        .or_else(|| msg.get("body")
+                            .and_then(|b| b.get("source"))
+                            .and_then(|s| s.get("path"))
+                            .and_then(Value::as_str)
+                            .map(String::from));
+                    if let Some(file) = file {
                         if let Some(arr) = msg.get("body").and_then(|b| b.get("breakpoints")).and_then(Value::as_array) {
                             let verified_lines: Vec<u32> = arr.iter()
                                 .filter(|b| b.get("verified").and_then(Value::as_bool).unwrap_or(false))
