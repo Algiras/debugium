@@ -1,0 +1,10 @@
+{
+  "name": "debugium",
+  "version": "0.1.0",
+  "description": "AI-driven debugger for Python, JavaScript, TypeScript, and Rust. Control live debug sessions via MCP tools: set breakpoints, inspect variables, step through execution, evaluate expressions, and trace bugs across all major languages using DAP adapters.",
+  "author": { "name": "Algiras" },
+  "license": "MIT",
+  "keywords": ["debugger", "dap", "mcp", "python", "rust", "javascript", "typescript", "breakpoints", "llm-debugging"],
+  "homepage": "https://github.com/Algiras/debugium",
+  "repository": "https://github.com/Algiras/debugium"
+}

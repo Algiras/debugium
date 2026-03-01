@@ -17,4 +17,5 @@ target/
 .playwright-mcp/
 tests/screenshots/
 SKILL.md
+!skills/**/SKILL.md
 test_mcp_rust*.sh
