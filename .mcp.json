@@ -3,7 +3,7 @@
     "debugium": {
       "command": "debugium",
       "args": ["mcp"],
-      "description": "Debugium — real-time debugger MCP integration. Provides tools to inspect paused programs, set breakpoints, step through code, and annotate the UI."
+      "description": "Debugium — live debugger MCP bridge. Inspect paused programs, step code, set breakpoints, annotate the UI, and record findings. Server must be running (`debugium launch <script>`) before tools are usable."
     }
   }
 }
