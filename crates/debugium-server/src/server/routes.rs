@@ -255,7 +255,11 @@ pub async fn breakpoints_handler(
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "session not found" }))).into_response();
     };
     let bps = session.breakpoints.read().await.clone();
-    Json(json!({ "breakpoints": bps })).into_response()
+    // Return both legacy format (file → [lines]) and new format with conditions
+    let with_conditions: serde_json::Value = bps.iter().map(|(file, specs)| {
+        (file.clone(), json!(specs))
+    }).collect::<serde_json::Map<String, Value>>().into();
+    Json(json!({ "breakpoints": with_conditions })).into_response()
 }
 
 // ─── Annotations endpoint ─────────────────────────────────────────────────────

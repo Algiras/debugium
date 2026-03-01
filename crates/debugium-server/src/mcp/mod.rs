@@ -622,14 +622,15 @@ async fn proxy_tool_via_http(
 
 // ─── Broadcast breakpoints_changed so the UI can update gutter dots ──────────
 
-async fn broadcast_breakpoints_changed(hub: &Arc<Hub>, session_id: &str, file: &str, lines: &[u32]) {
+async fn broadcast_breakpoints_changed(hub: &Arc<Hub>, session_id: &str, file: &str, specs: &[crate::dap::session::BpSpec]) {
     use dap_types::WsEnvelope;
+    let lines: Vec<u32> = specs.iter().map(|s| s.line).collect();
     let envelope = WsEnvelope {
         session_id: session_id.to_string(),
         msg: json!({
             "type": "event",
             "event": "breakpoints_changed",
-            "body": { "file": file, "breakpoints": lines }
+            "body": { "file": file, "breakpoints": lines, "specs": specs }
         }),
     };
     if let Ok(json) = serde_json::to_string(&envelope) {
@@ -684,7 +685,7 @@ pub async fn dispatch_tool(
                 .collect();
             let resp = s.set_breakpoints(file, lines.clone()).await?;
             // Broadcast breakpoints_changed so the UI updates immediately
-            let verified: Vec<u32> = s.breakpoints.read().await
+            let verified = s.breakpoints.read().await
                 .get(file).cloned().unwrap_or_default();
             broadcast_breakpoints_changed(hub, session_id, file, &verified).await;
             Ok(format!("Breakpoints set in {file} at lines {:?}\n{}", lines,
@@ -702,7 +703,7 @@ pub async fn dispatch_tool(
             let files: Vec<String> = s.breakpoints.read().await.keys().cloned().collect();
             for file in &files {
                 s.set_breakpoints(file, vec![]).await?;
-                broadcast_breakpoints_changed(hub, session_id, file, &[]).await;
+                broadcast_breakpoints_changed(hub, session_id, file, &[] as &[crate::dap::session::BpSpec]).await;
             }
             Ok(format!("Cleared breakpoints in {} file(s): {:?}", files.len(), files))
         }
@@ -1166,29 +1167,22 @@ pub async fn dispatch_tool(
         }
 
         "set_breakpoint" => {
+            use crate::dap::session::BpSpec;
             let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
             let file = args.get("file").and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("`file` is required"))?;
             let line = require_u32(&args, "line")?;
             let condition = args.get("condition").and_then(Value::as_str).map(str::to_string);
 
-            // Build breakpoints list preserving existing ones, add/replace this line
-            let mut existing: Vec<u32> = s.breakpoints.read().await
+            // Build specs list preserving existing ones, add/replace this line
+            let mut existing: Vec<BpSpec> = s.breakpoints.read().await
                 .get(file).cloned().unwrap_or_default();
-            if !existing.contains(&line) {
-                existing.push(line);
-            }
-            let bp_args = if let Some(cond) = &condition {
-                let specs: Vec<Value> = existing.iter().map(|&l| {
-                    if l == line { json!({ "line": l, "condition": cond }) }
-                    else { json!({ "line": l }) }
-                }).collect();
-                json!({ "source": { "path": file }, "breakpoints": specs })
+            if let Some(pos) = existing.iter().position(|s| s.line == line) {
+                existing[pos].condition = condition.clone();
             } else {
-                let specs: Vec<Value> = existing.iter().map(|&l| json!({ "line": l })).collect();
-                json!({ "source": { "path": file }, "breakpoints": specs })
-            };
-            let resp = s.client.request("setBreakpoints", Some(bp_args)).await?;
+                existing.push(BpSpec { line, condition: condition.clone() });
+            }
+            let resp = s.set_breakpoints_with_conditions(file, existing).await?;
             let verified = resp.get("body").and_then(|b| b.get("breakpoints"))
                 .and_then(Value::as_array)
                 .and_then(|arr| arr.iter().find(|bp| {
@@ -1196,10 +1190,10 @@ pub async fn dispatch_tool(
                 }))
                 .and_then(|bp| bp.get("line").and_then(Value::as_u64))
                 .unwrap_or(line as u64) as u32;
-            // Update stored breakpoints
-            s.breakpoints.write().await.entry(file.to_string()).or_default().push(line);
-            broadcast_breakpoints_changed(hub, session_id, file, &s.breakpoints.read().await.get(file).cloned().unwrap_or_default()).await;
-            Ok(format!("Breakpoint set at {}:{} (verified line: {})", file, line, verified))
+            let stored = s.breakpoints.read().await.get(file).cloned().unwrap_or_default();
+            broadcast_breakpoints_changed(hub, session_id, file, &stored).await;
+            let cond_msg = condition.map(|c| format!(" [condition: {c}]")).unwrap_or_default();
+            Ok(format!("Breakpoint set at {}:{} (verified line: {}){}", file, line, verified, cond_msg))
         }
 
         "get_console_output" => {

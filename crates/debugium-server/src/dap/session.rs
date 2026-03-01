@@ -25,6 +25,14 @@ pub struct TimelineEntry {
     pub stack_summary: Vec<String>,
 }
 
+/// Breakpoint spec with optional condition.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BpSpec {
+    pub line: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
+}
+
 /// Result of evaluating one watch expression at a stop.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WatchResult {
@@ -84,8 +92,8 @@ pub struct Session {
     initialized_rx: tokio::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
     /// Capabilities returned by the adapter's `initialize` response.
     capabilities: RwLock<Value>,
-    /// Breakpoints currently set per file: path → verified line numbers.
-    pub breakpoints: RwLock<HashMap<String, Vec<u32>>>,
+    /// Breakpoints currently set per file: path → specs (line + optional condition).
+    pub breakpoints: RwLock<HashMap<String, Vec<BpSpec>>>,
     /// Annotations added by the LLM (file:line → note).
     pub annotations: RwLock<Vec<Annotation>>,
     /// Findings / conclusions left by the LLM.
@@ -524,21 +532,36 @@ impl Session {
     }
 
     /// Set breakpoints on a running session (e.g. from the UI or MCP).
-    /// Stores verified lines in `self.breakpoints`.
+    /// Stores verified specs in `self.breakpoints`.
     pub async fn set_breakpoints(&self, file: &str, lines: Vec<u32>) -> Result<Value> {
+        self.set_breakpoints_with_conditions(file, lines.into_iter().map(|l| BpSpec { line: l, condition: None }).collect()).await
+    }
+
+    /// Set breakpoints with optional conditions.
+    pub async fn set_breakpoints_with_conditions(&self, file: &str, specs: Vec<BpSpec>) -> Result<Value> {
         let args = serde_json::json!({
             "source": { "path": file },
-            "breakpoints": lines.iter().map(|l| serde_json::json!({ "line": l })).collect::<Vec<_>>()
+            "breakpoints": specs.iter().map(|s| {
+                let mut obj = serde_json::json!({ "line": s.line });
+                if let Some(cond) = &s.condition {
+                    obj["condition"] = Value::String(cond.clone());
+                }
+                obj
+            }).collect::<Vec<_>>()
         });
         let resp = self.client.request("setBreakpoints", Some(args)).await?;
-        // Extract verified lines from the DAP response
-        let verified: Vec<u32> = resp.get("body")
+        // Extract verified lines from the DAP response, preserve conditions from input specs
+        let verified: Vec<BpSpec> = resp.get("body")
             .and_then(|b| b.get("breakpoints"))
             .and_then(Value::as_array)
             .map(|arr| arr.iter()
-                .filter_map(|b| b.get("line").and_then(Value::as_u64).map(|l| l as u32))
+                .filter_map(|b| {
+                    let line = b.get("line").and_then(Value::as_u64).map(|l| l as u32)?;
+                    let condition = specs.iter().find(|s| s.line == line).and_then(|s| s.condition.clone());
+                    Some(BpSpec { line, condition })
+                })
                 .collect())
-            .unwrap_or_else(|| lines.clone());
+            .unwrap_or_else(|| specs.clone());
         let mut bps = self.breakpoints.write().await;
         if verified.is_empty() {
             bps.remove(file);
