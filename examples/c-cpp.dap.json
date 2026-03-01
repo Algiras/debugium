@@ -1,0 +1,11 @@
+{
+  "name": "C / C++ (lldb-dap)",
+  "adapterId": "lldb",
+  "request": "launch",
+  "command": ["/opt/homebrew/opt/llvm/bin/lldb-dap"],
+  "launch": {
+    "type": "lldb",
+    "request": "launch"
+  },
+  "_note": "Compile with: cc -g -O0 main.c -o main  (or c++ -std=c++17 -g -O0 main.cpp -o main)"
+}

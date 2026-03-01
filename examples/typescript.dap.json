@@ -1,0 +1,15 @@
+{
+  "name": "TypeScript (tsx via js-debug)",
+  "adapterId": "pwa-node",
+  "request": "launch",
+  "tcpAfterSpawn": true,
+  "command": ["node", "./js-debug/js-debug/src/dapDebugServer.js", "0"],
+  "launch": {
+    "type": "pwa-node",
+    "request": "launch",
+    "console": "internalConsole",
+    "skipFiles": ["<node_internals>/**"],
+    "runtimeExecutable": "tsx",
+    "sourceMaps": true
+  }
+}

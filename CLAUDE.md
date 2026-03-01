@@ -6,22 +6,81 @@ not static guesses.
 
 ---
 
-## Prerequisite: server must be running
+## Setup
 
-The MCP tools do nothing unless a Debugium server is active. Check first:
+### 1. Install Debugium
+
+```bash
+cargo install --path crates/debugium-server
+```
+
+### 2. Register the MCP server
+
+Add to `.mcp.json` (project root) or `~/.claude.json`:
+```json
+{
+  "mcpServers": {
+    "debugium": { "command": "debugium", "args": ["mcp"] }
+  }
+}
+```
+
+### 3. Launch a debug session
+
+Preferred: use a `dap.json` config from `examples/`:
+
+```bash
+# Python
+debugium launch script.py --config examples/python.dap.json --breakpoint "$(pwd)/script.py:42"
+
+# Node.js
+debugium launch app.js --config examples/node.dap.json --breakpoint "$(pwd)/app.js:15"
+
+# TypeScript
+debugium launch app.ts --config examples/typescript.dap.json --breakpoint "$(pwd)/app.ts:10"
+
+# C / C++ (compile with -g -O0 first)
+cc -g -O0 main.c -o /tmp/main
+debugium launch /tmp/main --config examples/c-cpp.dap.json --breakpoint "$(pwd)/main.c:20"
+
+# Rust
+cargo build && debugium launch ./target/debug/myapp --config examples/c-cpp.dap.json --breakpoint "$(pwd)/src/main.rs:10"
+
+# Remote attach (debugpy already listening on port 5678)
+debugium launch app.py --config examples/remote-python.dap.json --breakpoint "$(pwd)/app.py:42"
+```
+
+Or use `--adapter` shorthand (Python only is built-in):
+```bash
+debugium launch script.py --adapter python --breakpoint "$(pwd)/script.py:42"
+```
+
+Auto-discovery: place a `dap.json` in the project root and omit `--config`/`--adapter`.
+
+### 4. Or launch a session via MCP (autonomous)
+
+Instead of CLI launch, use the `launch_session` MCP tool directly:
+```
+launch_session(program="/abs/path/script.py", breakpoints=["/abs/path/script.py:42"])
+→ { session_id: "session-...", status: "paused" }
+```
+
+### 5. Verify the server is running
 
 ```
 get_sessions          → lists active sessions (empty = server not started)
 ```
 
-If empty, ask the user to run:
-```bash
-debugium launch <script.py> --adapter python --breakpoint <file>:<line>
-```
+If empty and `launch_session` is not available, ask the user to launch manually.
 
 ---
 
 ## Standard debugging workflow
+
+### 0. Launch (if no session exists)
+```
+launch_session        → starts adapter, sets breakpoints, returns session_id
+```
 
 ### 1. Orient — always start here
 ```
@@ -110,6 +169,8 @@ remove_watch(expression)
 
 ```
 # Session
+launch_session(program, adapter?, config?, breakpoints?, session_id?)
+stop_session(session_id?)
 get_sessions / list_sessions
 
 # Breakpoints

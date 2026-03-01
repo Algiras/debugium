@@ -215,6 +215,7 @@ pub async fn sessions_handler(State(state): State<AppState>) -> impl IntoRespons
 pub struct LaunchRequest {
     pub program: String,
     pub adapter: Option<String>,
+    pub config: Option<String>,
     pub breakpoints: Option<Vec<String>>,
     pub session_id: Option<String>,
 }
@@ -223,8 +224,12 @@ pub async fn launch_session_handler(
     State(state): State<AppState>,
     Json(body): Json<LaunchRequest>,
 ) -> impl IntoResponse {
-    let adapter_type = body.adapter.as_deref().unwrap_or("python");
-    let kind = AdapterKind::from_str(adapter_type);
+    let kind = if let Some(ref cfg) = body.config {
+        AdapterKind::from_str(cfg)
+    } else {
+        let adapter_type = body.adapter.as_deref().unwrap_or("python");
+        AdapterKind::from_str(adapter_type)
+    };
     let adapter = Adapter::new(kind);
 
     let session_id = body.session_id.unwrap_or_else(|| {
@@ -249,13 +254,39 @@ pub async fn launch_session_handler(
     let cwd = std::env::current_dir().unwrap_or_default();
     let breakpoints = parse_breakpoints_str(body.breakpoints.unwrap_or_default());
 
+    let session2 = session.clone();
     tokio::spawn(async move {
-        if let Err(e) = session.configure_and_launch(program, cwd, &breakpoints).await {
+        if let Err(e) = session2.configure_and_launch(program, cwd, &breakpoints).await {
             tracing::error!("launch failed for session: {e}");
         }
     });
 
-    Json(json!({ "session_id": session_id })).into_response()
+    // Wait briefly for session to become ready (hit a breakpoint)
+    let status = match session.wait_for_stop(5).await {
+        Ok(()) => "paused",
+        Err(_) => "running",
+    };
+
+    // Broadcast session_launched on ALL existing sessions so connected UI clients hear it
+    {
+        use dap_types::WsEnvelope;
+        let all_ids = state.sessions.list().await;
+        for existing_id in &all_ids {
+            let envelope = WsEnvelope {
+                session_id: session_id.clone(),
+                msg: json!({
+                    "type": "event",
+                    "event": "session_launched",
+                    "body": { "session_id": session_id, "program": body.program, "status": status }
+                }),
+            };
+            if let Ok(j) = serde_json::to_string(&envelope) {
+                state.hub.broadcast(existing_id, j).await;
+            }
+        }
+    }
+
+    Json(json!({ "session_id": session_id, "status": status })).into_response()
 }
 
 // ─── Breakpoints endpoint ──────────────────────────────────────────────────────

@@ -1,0 +1,13 @@
+{
+  "name": "Scala (JVM/JDI)",
+  "adapterId": "java",
+  "request": "launch",
+  "command": ["bash", "tools/java-dap-adapter/run.sh"],
+  "launch": {
+    "type": "java",
+    "request": "launch",
+    "console": "internalConsole",
+    "classpath": "<compiled-classes-dir>:<path-to>/scala-library.jar"
+  },
+  "_note": "Set classpath to your compiled .class output dir + Scala library JAR. Compile first with: scalac -d /tmp/scala-out tests/TargetScala.scala"
+}

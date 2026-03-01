@@ -1,14 +1,27 @@
 {
-  "_comment": "Copy this file to dap.json and adapt to your adapter. Then use: debugium launch --adapter dap.json <program>",
+  "_comment": "Debugium debug adapter config. Copy to ./dap.json or .debugium/dap.json for auto-discovery.",
 
+  "_example_1": "=== Local Python launch ===",
+
+  "name": "My Python App",
   "adapterId": "debugpy",
+  "request": "launch",
 
   "command": ["python3", "-m", "debugpy.adapter"],
 
   "launch": {
     "type": "python",
     "request": "launch",
-    "console": "internalConsole",
-    "justMyCode": false
-  }
+    "console": "internalConsole"
+  },
+
+  "env": { "DEBUG": "1" },
+  "args": ["--verbose"],
+  "stopOnEntry": false,
+  "justMyCode": false,
+  "exceptionBreakpoints": ["uncaught"],
+  "breakpoints": [
+    { "file": "src/main.py", "line": 42 },
+    { "file": "src/main.py", "line": 55, "condition": "x > 10" }
+  ]
 }

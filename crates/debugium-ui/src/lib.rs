@@ -261,7 +261,7 @@ pub fn App() -> impl IntoView {
         right_width: RwSignal::new(272u32),
         watches: RwSignal::new(vec![]),
         active_tab: RwSignal::new(None),
-        bps_collapsed: RwSignal::new(false),
+        bps_collapsed: RwSignal::new(true),
         dark_mode: RwSignal::new(false),
         var_filter: RwSignal::new(String::new()),
     };
@@ -319,6 +319,9 @@ pub fn App() -> impl IntoView {
 
     // ── Poll /sessions continuously ───────────────────
     leptos::task::spawn_local(async move {
+        // Track which session IDs the polling loop has already seen,
+        // so we can detect genuinely new ones even if handle_envelope added them first.
+        let mut poll_known: std::collections::HashSet<String> = std::collections::HashSet::new();
         loop {
             if let Ok(resp) = gloo_net::http::Request::get("/sessions").send().await {
                 if let Ok(data) = resp.json::<serde_json::Value>().await {
@@ -328,11 +331,24 @@ pub fn App() -> impl IntoView {
                                 .or_else(|| v.get("id").and_then(|id| id.as_str()).map(str::to_string))
                         }).collect();
                         if !ids.is_empty() {
+                            // Detect new sessions vs what polling has seen before
+                            let mut new_from_poll: Vec<String> = Vec::new();
+                            for id in &ids {
+                                if poll_known.insert(id.clone()) {
+                                    new_from_poll.push(id.clone());
+                                }
+                            }
                             sessions.update(|s| {
                                 for id in &ids {
                                     if !s.contains(id) { s.push(id.clone()); }
                                 }
                             });
+                            // Auto-switch to a genuinely new session (not the initial discovery)
+                            if let Some(newest) = new_from_poll.last() {
+                                if poll_known.len() > new_from_poll.len() {
+                                    active_session.set(Some(newest.clone()));
+                                }
+                            }
                         }
                         // Store enriched meta per session
                         let metas_snap: Vec<(String, Value)> = arr.iter().filter_map(|v| {
@@ -678,6 +694,13 @@ pub fn App() -> impl IntoView {
             <ProcessInfoBar active_session=active_session.read_only() session_metas=session_metas.read_only() />
             <div class="dashboard-wrapper">
 
+                // Expand rail for collapsed left sidebar
+                <Show when=move || lc.get() && multi_session()>
+                    <div class="sidebar-rail sidebar-rail-left" title="Expand sessions"
+                        on:click=move |_| lc.set(false)
+                    >"▶"</div>
+                </Show>
+
                 <aside
                     class="sidebar sidebar-left"
                     class:collapsed=move || lc.get() || !multi_session()
@@ -693,6 +716,7 @@ pub fn App() -> impl IntoView {
 
                 <main class="center-content">
                     <SourcePanel session_data=session_data active_session=active_session.read_only() />
+                    <FindingsPanel session_data=session_data active_session=active_session.read_only() />
                     <ConsolePanel session_data=session_data active_session=active_session.read_only() />
                 </main>
 
@@ -709,10 +733,16 @@ pub fn App() -> impl IntoView {
                     <StackPanel session_data=session_data active_session=active_session.read_only() />
                     <VariablesPanel session_data=session_data active_session=active_session.read_only() />
                     <BreakpointsPanel session_data=session_data active_session=active_session.read_only() />
-                    <FindingsPanel session_data=session_data active_session=active_session.read_only() />
                     <WatchPanel session_data=session_data active_session=active_session.read_only() />
                     <TimelinePanel session_data=session_data active_session=active_session.read_only() />
                 </aside>
+
+                // Expand rail for collapsed right sidebar
+                <Show when=move || rc.get()>
+                    <div class="sidebar-rail sidebar-rail-right" title="Expand panels"
+                        on:click=move |_| rc.set(false)
+                    >"◀"</div>
+                </Show>
 
             </div>
             // ── Status bar ──
@@ -777,6 +807,7 @@ fn handle_envelope(
     let mut post_vars_from_scope: Option<(String, i64)> = None; // (session_id, variablesReference)
     let mut post_watch_eval: Option<(String, u32, Vec<String>)> = None; // (session_id, frameId, exprs)
     let mut post_session_ended: bool = false;
+    let mut post_switch_to_session: Option<String> = None;
     let id = envelope.session_id.clone();
 
     sessions.update(|s| { if !s.contains(&id) { s.push(id.clone()); } });
@@ -1021,6 +1052,9 @@ fn handle_envelope(
                         }
                     }
                 }
+                "session_launched" => {
+                    post_switch_to_session = Some(id.clone());
+                }
                 _ => {}
             },
             "response" => {
@@ -1220,6 +1254,10 @@ fn handle_envelope(
                 "context": "watch"
             }));
         }
+    }
+    // Auto-switch to newly launched session (must happen outside data.update)
+    if let Some(new_sid) = post_switch_to_session {
+        active_session.set(Some(new_sid));
     }
     // Remove ended session after a brief delay (let final events flush first)
     if post_session_ended {
@@ -2730,7 +2768,15 @@ fn FindingsPanel(
     };
 
     view! {
-        <div class="panel findings-panel" style=move || if collapsed.get() { "flex: 0 0 32px; overflow: hidden;" } else { "flex: 0 0 auto; max-height: 200px; overflow: hidden; border-top: 1px solid var(--border);" }>
+        <div class="panel findings-panel" style=move || {
+            if collapsed.get() {
+                "flex: 0 0 28px; overflow: hidden; border-top: 1px solid var(--border);".to_string()
+            } else if findings().is_empty() {
+                "display: none;".to_string()
+            } else {
+                format!("flex: 0 0 auto; max-height: 160px; overflow: auto; border-top: 1px solid var(--border);")
+            }
+        }>
             <div class="panel-header">
                 <h2>"Findings"</h2>
                 <button
@@ -2753,7 +2799,6 @@ fn FindingsPanel(
                                 <li class="finding-item" class:finding-error=move || is_error class:finding-warning=move || is_warning>
                                     <span class="finding-icon">{icon}</span>
                                     <span class="finding-msg">{f.message.clone()}</span>
-                                    <span class="finding-ts">{f.timestamp.clone()}</span>
                                 </li>
                             }
                         }
@@ -2901,7 +2946,7 @@ fn TimelinePanel(
     active_session: ReadSignal<Option<String>>,
 ) -> impl IntoView {
     let layout = use_context::<LayoutState>().expect("no LayoutState");
-    let timeline_collapsed: RwSignal<bool> = RwSignal::new(false);
+    let timeline_collapsed: RwSignal<bool> = RwSignal::new(true);
     let active_tab = layout.active_tab;
 
     let timeline = move || {

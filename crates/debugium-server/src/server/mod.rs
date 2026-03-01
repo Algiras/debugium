@@ -34,6 +34,7 @@ pub async fn start(
         session_counter: Arc::new(AtomicU32::new(1)),
     };
 
+    let static_dir_for_index = static_dir.clone();
     let app = Router::new()
         .route("/ws", get(routes::ws_handler))
         .route("/source", get(routes::source_handler))
@@ -46,7 +47,21 @@ pub async fn start(
         .route("/timeline", get(routes::timeline_handler))
         .route("/watches", get(routes::watches_handler))
         .route("/mcp-proxy", post(routes::mcp_proxy_handler))
-        .fallback_service(ServeDir::new(&static_dir))
+        .fallback_service(
+            ServeDir::new(&static_dir)
+                .append_index_html_on_directories(true)
+                .precompressed_gzip()
+        )
+        .layer(axum::middleware::from_fn(move |req: axum::extract::Request, next: axum::middleware::Next| {
+            async move {
+                let mut resp = next.run(req).await;
+                resp.headers_mut().insert(
+                    axum::http::header::CACHE_CONTROL,
+                    axum::http::HeaderValue::from_static("no-cache, no-store, must-revalidate"),
+                );
+                resp
+            }
+        }))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -98,6 +113,16 @@ pub async fn start_background(
         .route("/watches", axum::routing::get(routes::watches_handler))
         .route("/mcp-proxy", axum::routing::post(routes::mcp_proxy_handler))
         .fallback_service(tower_http::services::ServeDir::new(&static_dir))
+        .layer(axum::middleware::from_fn(|req: axum::extract::Request, next: axum::middleware::Next| {
+            async move {
+                let mut resp = next.run(req).await;
+                resp.headers_mut().insert(
+                    axum::http::header::CACHE_CONTROL,
+                    axum::http::HeaderValue::from_static("no-cache, no-store, must-revalidate"),
+                );
+                resp
+            }
+        }))
         .layer(tower_http::cors::CorsLayer::permissive())
         .with_state(state);
 

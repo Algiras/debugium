@@ -1040,7 +1040,27 @@ header {
     border: none;
 }
 
-/* collapse-strip removed — replaced by icon rails */
+/* Sidebar expand rails — visible when sidebar is collapsed */
+.sidebar-rail {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    cursor: pointer;
+    font-size: 10px;
+    color: var(--text-secondary);
+    user-select: none;
+    transition: background .15s;
+    flex-shrink: 0;
+}
+.sidebar-rail:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+.sidebar-rail-left { border-right: none; }
+.sidebar-rail-right { border-left: none; }
 
 /* Narrow-mode tweaks: tighter everything when space is limited */
 .narrow-mode .sidebar-left  { width: 160px; }
@@ -1370,24 +1390,30 @@ header {
 .bp-dot { color: var(--accent-red); font-size: 9px; }
 .bp-line-num { color: var(--text-secondary); }
 
-/* ─── Findings panel ──────────────────────────── */
+/* ─── Findings panel (center area, full width) ── */
 .findings-panel {
     flex-shrink: 0;
     border-top: 1px solid var(--border);
+    background: var(--bg-secondary);
+}
+.findings-panel .panel-header {
+    padding: 4px 12px;
+}
+.findings-panel .panel-header h2 {
+    font-size: 10px;
 }
 .finding-item {
     display: flex;
     align-items: flex-start;
-    gap: 6px;
-    padding: 4px 12px;
-    font-size: 11px;
+    gap: 8px;
+    padding: 8px 12px;
+    font-size: 12px;
     color: var(--text-primary);
-    border-bottom: 1px solid rgba(255,255,255,.04);
+    border-bottom: 1px solid rgba(255,255,255,.06);
 }
 .finding-item:hover { background: var(--bg-item-hover); }
-.finding-icon { flex-shrink: 0; font-size: 10px; }
-.finding-msg { flex: 1; word-break: break-word; }
-.finding-ts { font-size: 9px; color: var(--text-dim); white-space: nowrap; margin-left: 4px; }
+.finding-icon { flex-shrink: 0; font-size: 12px; padding-top: 1px; }
+.finding-msg { flex: 1; word-break: break-word; line-height: 1.5; }
 .finding-error { background: rgba(229,20,0,.06); }
 .finding-warning { background: rgba(255,204,0,.06); }
 
