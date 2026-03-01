@@ -43,6 +43,7 @@ pub async fn start(
         .route("/annotations", get(routes::annotations_handler))
         .route("/findings", get(routes::findings_handler))
         .route("/state", get(routes::state_handler))
+        .route("/mcp-proxy", post(routes::mcp_proxy_handler))
         .fallback_service(ServeDir::new(&static_dir))
         .layer(CorsLayer::permissive())
         .with_state(state);
@@ -90,6 +91,8 @@ pub async fn start_background(
         .route("/breakpoints", axum::routing::get(routes::breakpoints_handler))
         .route("/annotations", axum::routing::get(routes::annotations_handler))
         .route("/findings", axum::routing::get(routes::findings_handler))
+        .route("/state", axum::routing::get(routes::state_handler))
+        .route("/mcp-proxy", axum::routing::post(routes::mcp_proxy_handler))
         .fallback_service(tower_http::services::ServeDir::new(&static_dir))
         .layer(tower_http::cors::CorsLayer::permissive())
         .with_state(state);

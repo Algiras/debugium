@@ -444,7 +444,7 @@ fn tool_list() -> Value {
 
 // ─── MCP server entry point ───────────────────────────────────────────────────
 
-pub async fn serve(registry: Arc<SessionRegistry>, hub: Arc<Hub>) -> Result<()> {
+pub async fn serve(registry: Arc<SessionRegistry>, hub: Arc<Hub>, proxy_port: Option<u16>) -> Result<()> {
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin);
     let mut stdout = tokio::io::stdout();
@@ -462,10 +462,17 @@ pub async fn serve(registry: Arc<SessionRegistry>, hub: Arc<Hub>) -> Result<()> 
 
         debug!("[MCP IN] {trimmed}");
 
-        let response = match serde_json::from_str::<RpcRequest>(trimmed) {
-            Err(e) => RpcResponse::err(None, -32700, format!("Parse error: {e}")),
-            Ok(req) => handle_request(req, &registry, &hub).await,
+        let (response, is_notification) = match serde_json::from_str::<RpcRequest>(trimmed) {
+            Err(e) => (RpcResponse::err(None, -32700, format!("Parse error: {e}")), false),
+            Ok(req) => {
+                let notification = req.id.is_none()
+                    && req.method.starts_with("notifications/");
+                (handle_request(req, &registry, &hub, proxy_port).await, notification)
+            }
         };
+
+        // Notifications must not generate a response (JSON-RPC / MCP spec)
+        if is_notification { continue; }
 
         let mut out = serde_json::to_string(&response)?;
         out.push('\n');
@@ -479,16 +486,19 @@ pub async fn serve(registry: Arc<SessionRegistry>, hub: Arc<Hub>) -> Result<()> 
 
 // ─── Request router ───────────────────────────────────────────────────────────
 
-async fn handle_request(req: RpcRequest, registry: &Arc<SessionRegistry>, hub: &Arc<Hub>) -> RpcResponse {
+async fn handle_request(req: RpcRequest, registry: &Arc<SessionRegistry>, hub: &Arc<Hub>, proxy_port: Option<u16>) -> RpcResponse {
     let id = req.id.clone();
     match req.method.as_str() {
         // MCP lifecycle
         "initialize" => {
+            if let Some(port) = proxy_port {
+                eprintln!("[Debugium MCP] Proxy mode → http://127.0.0.1:{port}");
+            }
             // Print active sessions to stderr so the LLM can see what's available
             let ids = registry.list().await;
-            if ids.is_empty() {
+            if ids.is_empty() && proxy_port.is_none() {
                 eprintln!("[Debugium MCP] No active sessions. Use POST /sessions or launch with --mcp to start one.");
-            } else {
+            } else if !ids.is_empty() {
                 eprintln!("[Debugium MCP] Active sessions:");
                 for sid in &ids {
                     if let Some(s) = registry.get(sid).await {
@@ -520,6 +530,16 @@ async fn handle_request(req: RpcRequest, registry: &Arc<SessionRegistry>, hub: &
             let params = req.params.unwrap_or(Value::Null);
             let name = params.get("name").and_then(Value::as_str).unwrap_or("").to_string();
             let args = params.get("arguments").cloned().unwrap_or(Value::Null);
+
+            // In proxy mode, always forward to the running server
+            if let Some(port) = proxy_port {
+                match proxy_tool_via_http(port, &name, args).await {
+                    Ok(content) => return RpcResponse::ok(id, json!({ "content": [{ "type": "text", "text": content }] })),
+                    Err(e) => return RpcResponse::err(id, -32603, e.to_string()),
+                }
+            }
+
+            // Local dispatch (launch --mcp mode)
             match dispatch_tool(&name, args, registry, hub).await {
                 Ok(content) => RpcResponse::ok(id, json!({ "content": [{ "type": "text", "text": content }] })),
                 Err(e) => RpcResponse::err(id, -32603, e.to_string()),
@@ -527,6 +547,29 @@ async fn handle_request(req: RpcRequest, registry: &Arc<SessionRegistry>, hub: &
         }
 
         _ => RpcResponse::err(id, -32601, format!("Method not found: {}", req.method)),
+    }
+}
+
+// ─── HTTP proxy for standalone MCP mode ──────────────────────────────────────
+
+async fn proxy_tool_via_http(
+    port: u16,
+    tool: &str,
+    args: Value,
+) -> Result<String> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://127.0.0.1:{port}/mcp-proxy"))
+        .json(&json!({ "tool": tool, "args": args }))
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("Cannot reach Debugium server at port {port}: {e}"))?;
+    let body: Value = resp.json().await
+        .map_err(|e| anyhow::anyhow!("Invalid response from server: {e}"))?;
+    if body["ok"].as_bool() == Some(true) {
+        Ok(body["result"].as_str().unwrap_or("{}").to_string())
+    } else {
+        Err(anyhow::anyhow!("{}", body["error"].as_str().unwrap_or("proxy error")))
     }
 }
 
@@ -566,7 +609,7 @@ async fn broadcast_command(hub: &Arc<Hub>, session_id: &str, command: &str) {
 
 // ─── Tool dispatcher ─────────────────────────────────────────────────────────
 
-async fn dispatch_tool(
+pub async fn dispatch_tool(
     name: &str,
     args: Value,
     registry: &Arc<SessionRegistry>,
@@ -701,7 +744,18 @@ async fn dispatch_tool(
             let s = session.ok_or_else(|| anyhow::anyhow!("Session not found"))?;
             let expr = args.get("expression").and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("`expression` is required"))?;
-            let frame_id = require_u32(&args, "frame_id")?;
+            // frame_id is optional; auto-resolve top frame when omitted
+            let frame_id = if let Some(v) = args.get("frame_id").and_then(Value::as_u64) {
+                v as u32
+            } else {
+                let st = s.client.request("stackTrace", Some(json!({
+                    "threadId": 1, "startFrame": 0, "levels": 1
+                }))).await?;
+                st.get("body").and_then(|b| b["stackFrames"].as_array())
+                    .and_then(|a| a.first())
+                    .and_then(|f| f["id"].as_u64())
+                    .unwrap_or(1) as u32
+            };
             let context = args.get("context").and_then(Value::as_str).unwrap_or("repl");
             let resp = s.client.request("evaluate", Some(json!({
                 "expression": expr,
@@ -997,9 +1051,24 @@ async fn dispatch_tool(
                     Some(json!({ "filters": ["raised"] }))).await.ok();
             }
 
-            // Continue and wait for stop
-            s.client.request("continue", Some(json!({ "threadId": thread_id }))).await?;
-            s.wait_for_stop(timeout).await?;
+            // Wait briefly for any in-flight stop event (handles race where exception
+            // fires just as this tool is called and last_stopped isn't set yet)
+            if s.last_stopped.read().await.is_none() {
+                // Give up to 5s for a pending stop event before deciding to continue
+                let _ = s.wait_for_stop(5).await;
+            }
+            // If already stopped at an exception, use current state; otherwise continue and wait
+            let already_at_exception = s.last_stopped.read().await
+                .as_ref()
+                .and_then(|ev| ev.get("body"))
+                .and_then(|b| b.get("reason"))
+                .and_then(Value::as_str)
+                .map(|r| r == "exception")
+                .unwrap_or(false);
+            if !already_at_exception {
+                s.client.request("continue", Some(json!({ "threadId": thread_id }))).await?;
+                s.wait_for_stop(timeout).await?;
+            }
 
             // Reuse get_debug_context logic: call recursively via a fake args
             let ctx_args = json!({ "session_id": session_id, "thread_id": thread_id });

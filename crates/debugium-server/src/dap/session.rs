@@ -467,7 +467,12 @@ impl Session {
     }
 
     /// Wait for the next `stopped` event (with a timeout in seconds).
+    /// Returns immediately if the session is already paused.
     pub async fn wait_for_stop(&self, timeout_secs: u64) -> Result<()> {
+        // If already paused, return immediately
+        if self.last_stopped.read().await.is_some() {
+            return Ok(());
+        }
         let mut rx = self.stopped_tx.subscribe();
         let before = *rx.borrow_and_update();
         tokio::time::timeout(tokio::time::Duration::from_secs(timeout_secs), async move {

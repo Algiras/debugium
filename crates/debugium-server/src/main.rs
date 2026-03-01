@@ -43,9 +43,13 @@ enum Commands {
         serve: bool,
 
 
-        /// Open browser automatically (default: true, use --no-open-browser to disable)
-        #[arg(long, default_value_t = true)]
+        /// Open browser automatically (default: true)
+        #[arg(long, default_value_t = true, overrides_with = "no_open_browser")]
         open_browser: bool,
+
+        /// Disable automatic browser opening
+        #[arg(long, overrides_with = "open_browser")]
+        no_open_browser: bool,
 
         /// Static assets directory (defaults to crates/debugium-ui/dist)
         #[arg(long)]
@@ -258,11 +262,13 @@ async fn main() -> Result<()> {
             port,
             serve,
             open_browser,
+            no_open_browser,
             static_dir,
             breakpoint,
             mcp,
             log_level: _,
         } => {
+            let open_browser = open_browser && !no_open_browser;
             let hub = Hub::new();
             let registry = SessionRegistry::new();
 
@@ -298,8 +304,12 @@ async fn main() -> Result<()> {
             };
 
             home.write_port(actual_port);
-            // Print URL to stdout so scripts can capture it (stderr for humans)
-            println!("http://localhost:{actual_port}");
+            // When --mcp is set, stdout is the MCP JSON-RPC channel — use stderr only
+            if mcp {
+                eprintln!("http://localhost:{actual_port}");
+            } else {
+                println!("http://localhost:{actual_port}");
+            }
             eprintln!("[Debugium] UI ready at http://localhost:{actual_port}");
             eprintln!("[Debugium] Session: default  program: {}", program.display());
 
