@@ -316,6 +316,44 @@ pub async fn state_handler(
     }
 }
 
+// ─── Timeline endpoint ────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct TimelineParams {
+    session: Option<String>,
+    limit: Option<usize>,
+}
+
+pub async fn timeline_handler(
+    Query(params): Query<TimelineParams>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let session_id = params.session.unwrap_or_else(|| "default".to_string());
+    let Some(session) = state.sessions.get(&session_id).await else {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "session not found" }))).into_response();
+    };
+    let limit = params.limit.unwrap_or(50);
+    let tl = session.timeline.read().await;
+    let entries: Vec<_> = tl.iter().rev().take(limit).cloned().collect();
+    let entries: Vec<_> = entries.into_iter().rev().collect();
+    Json(json!({ "timeline": entries })).into_response()
+}
+
+// ─── Watches endpoint ─────────────────────────────────────────────────────────
+
+pub async fn watches_handler(
+    Query(params): Query<SessionParam>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let session_id = params.session.unwrap_or_else(|| "default".to_string());
+    let Some(session) = state.sessions.get(&session_id).await else {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "session not found" }))).into_response();
+    };
+    let watches = session.watches.read().await.clone();
+    let results = session.watch_results.read().await.clone();
+    Json(json!({ "watches": watches, "results": results })).into_response()
+}
+
 fn parse_breakpoints_str(raw: Vec<String>) -> Vec<(String, Vec<u32>)> {
     let mut map: std::collections::HashMap<String, Vec<u32>> = std::collections::HashMap::new();
     for bp in raw {

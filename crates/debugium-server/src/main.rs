@@ -368,7 +368,7 @@ async fn main() -> Result<()> {
             // Standalone MCP server — proxies tool calls to a running Debugium server
             let hub = Hub::new();
             let registry = SessionRegistry::new();
-            mcp::serve(registry, hub, Some(port)).await?;
+            mcp::serve(registry, hub, None).await?;
         }
 
         // ── Control subcommands ───────────────────────────────────────────

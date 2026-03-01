@@ -437,6 +437,53 @@ fn tool_list() -> Value {
                     },
                     "required": ["names"]
                 }
+            },
+            {
+                "name": "get_timeline",
+                "description": "Return the execution timeline: one entry per `stopped` event, oldest first. Each entry includes file, line, timestamp, local variable snapshot, names of changed variables vs previous stop, and a stack summary. Useful for understanding *when* a value went wrong.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string" },
+                        "limit": { "type": "integer", "description": "Maximum entries to return (default 50, max 500), oldest first." }
+                    },
+                    "required": []
+                }
+            },
+            {
+                "name": "add_watch",
+                "description": "Add a watch expression that is evaluated automatically at every stop and broadcast to the UI. Results are visible in the Watch panel and via get_watches.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string" },
+                        "expression": { "type": "string", "description": "Expression to watch (e.g. 'len(cache)', 'x + y')." }
+                    },
+                    "required": ["expression"]
+                }
+            },
+            {
+                "name": "remove_watch",
+                "description": "Remove a previously added watch expression.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string" },
+                        "expression": { "type": "string", "description": "Expression to remove." }
+                    },
+                    "required": ["expression"]
+                }
+            },
+            {
+                "name": "get_watches",
+                "description": "Return current watch expressions and their last evaluated values.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string" }
+                    },
+                    "required": []
+                }
             }
         ]
     })
@@ -1190,6 +1237,72 @@ pub async fn dispatch_tool(
                 }
             }
             Ok(serde_json::to_string_pretty(&json!({ "sessions": result }))?)
+        }
+
+        // ── Timeline ───────────────────────────────────────────────
+        "get_timeline" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
+            let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(50) as usize;
+            let tl = s.timeline.read().await;
+            let entries: Vec<_> = tl.iter().rev().take(limit).cloned().collect();
+            let entries: Vec<_> = entries.into_iter().rev().collect();
+            Ok(serde_json::to_string_pretty(&json!({ "timeline": entries, "total": tl.len() }))?)
+        }
+
+        // ── Watch expressions ──────────────────────────────────────
+        "add_watch" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
+            let expr = args.get("expression").and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("`expression` is required"))?;
+            {
+                let mut watches = s.watches.write().await;
+                if !watches.contains(&expr.to_string()) {
+                    watches.push(expr.to_string());
+                }
+            }
+            // Broadcast watches_updated so the UI shows it immediately
+            use dap_types::WsEnvelope;
+            let watches_now = s.watches.read().await.clone();
+            let env = WsEnvelope {
+                session_id: session_id.to_string(),
+                msg: json!({
+                    "type": "event",
+                    "event": "watches_list_changed",
+                    "body": { "watches": watches_now }
+                }),
+            };
+            if let Ok(j) = serde_json::to_string(&env) { hub.broadcast(session_id, j).await; }
+            Ok(format!("Watch added: {expr}"))
+        }
+
+        "remove_watch" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
+            let expr = args.get("expression").and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("`expression` is required"))?;
+            s.watches.write().await.retain(|e| e != expr);
+            s.watch_results.write().await.retain(|r| r.expression != expr);
+            use dap_types::WsEnvelope;
+            let watches_now = s.watches.read().await.clone();
+            let env = WsEnvelope {
+                session_id: session_id.to_string(),
+                msg: json!({
+                    "type": "event",
+                    "event": "watches_list_changed",
+                    "body": { "watches": watches_now }
+                }),
+            };
+            if let Ok(j) = serde_json::to_string(&env) { hub.broadcast(session_id, j).await; }
+            Ok(format!("Watch removed: {expr}"))
+        }
+
+        "get_watches" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
+            let watches = s.watches.read().await.clone();
+            let results = s.watch_results.read().await.clone();
+            Ok(serde_json::to_string_pretty(&json!({
+                "watches": watches,
+                "results": results
+            }))?)
         }
 
         _ => Err(anyhow::anyhow!("Unknown tool: {name}")),

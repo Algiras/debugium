@@ -1420,3 +1420,21 @@ html.light-mode #app {
     background: var(--bg-app);
     color: var(--text-primary);
 }
+
+/* ─── Timeline panel ──────────────────────────── */
+.timeline-panel .panel-header { user-select: none; }
+.timeline-panel .panel-header:hover { background: var(--bg-item-hover); }
+.timeline-list { margin: 0; padding: 0; }
+.timeline-item { flex-direction: row; gap: 6px; font-size: 11px; }
+.timeline-item:hover { background: var(--bg-item-hover); }
+.timeline-changed .var-name { color: var(--accent-orange); }
+.badge {
+    display: inline-block;
+    background: var(--bg-input);
+    color: var(--text-secondary);
+    border-radius: 8px;
+    padding: 0 5px;
+    font-size: 10px;
+    min-width: 16px;
+    text-align: center;
+}

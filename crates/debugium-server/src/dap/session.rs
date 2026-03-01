@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -8,6 +8,30 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{info, warn};
+
+// ─── Timeline ─────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TimelineEntry {
+    pub id: u32,
+    pub file: String,
+    pub line: u32,
+    pub timestamp: String,
+    /// name → display value for all locals at this stop
+    pub variables_snapshot: HashMap<String, String>,
+    /// variable names whose value changed compared to previous entry
+    pub changed_vars: Vec<String>,
+    /// ["file.py:42 in fn()", …]
+    pub stack_summary: Vec<String>,
+}
+
+/// Result of evaluating one watch expression at a stop.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WatchResult {
+    pub expression: String,
+    pub value: String,
+    pub changed: bool,
+}
 
 // ─── Annotation / Finding ─────────────────────────────────────────────────────
 
@@ -74,6 +98,13 @@ pub struct Session {
     pub last_stopped: Arc<RwLock<Option<Value>>>,
     annotation_counter: AtomicU32,
     finding_counter: AtomicU32,
+    timeline_counter: AtomicU32,
+    /// Rolling execution timeline — one entry per `stopped` event (capped at 500).
+    pub timeline: RwLock<VecDeque<TimelineEntry>>,
+    /// Watch expressions managed by MCP tools (evaluated automatically on every stop).
+    pub watches: RwLock<Vec<String>>,
+    /// Last evaluated results for each watch.
+    pub watch_results: RwLock<Vec<WatchResult>>,
 }
 
 impl Session {
@@ -140,11 +171,15 @@ impl Session {
             breakpoints: RwLock::new(HashMap::new()),
             annotations: RwLock::new(Vec::new()),
             findings: RwLock::new(Vec::new()),
-            console_lines: RwLock::new(std::collections::VecDeque::new()),
+            console_lines: RwLock::new(VecDeque::new()),
             stopped_tx: stopped_tx.clone(),
             last_stopped: last_stopped_arc.clone(),
             annotation_counter: AtomicU32::new(0),
             finding_counter: AtomicU32::new(0),
+            timeline_counter: AtomicU32::new(0),
+            timeline: RwLock::new(VecDeque::new()),
+            watches: RwLock::new(Vec::new()),
+            watch_results: RwLock::new(Vec::new()),
         });
 
         // Spawn event dispatcher: handles initialized signal + enriches stopped events
@@ -254,7 +289,7 @@ impl Session {
                             .and_then(Value::as_str)
                             .unwrap_or("")
                             .to_string();
-                        enrich_stopped(&hub2, &client2, &session_id, thread_id, &reason).await;
+                        enrich_stopped(&hub2, &client2, &session_id, Some(&session2), thread_id, &reason).await;
                     } else if event.get("event").and_then(Value::as_str) == Some("continued") {
                         *last_stopped2.write().await = None;
                     }
@@ -309,11 +344,15 @@ impl Session {
             breakpoints: RwLock::new(HashMap::new()),
             annotations: RwLock::new(Vec::new()),
             findings: RwLock::new(Vec::new()),
-            console_lines: RwLock::new(std::collections::VecDeque::new()),
+            console_lines: RwLock::new(VecDeque::new()),
             stopped_tx: stopped_tx.clone(),
             last_stopped: last_stopped_arc.clone(),
             annotation_counter: AtomicU32::new(0),
             finding_counter: AtomicU32::new(0),
+            timeline_counter: AtomicU32::new(0),
+            timeline: RwLock::new(VecDeque::new()),
+            watches: RwLock::new(Vec::new()),
+            watch_results: RwLock::new(Vec::new()),
         });
 
         // Event dispatcher
@@ -325,6 +364,7 @@ impl Session {
             let last_stopped2 = last_stopped_arc.clone();
             let mut event_rx = event_rx;
             let mut init_tx_opt = Some(init_tx);
+            let session2 = session.clone();
             tokio::spawn(async move {
                 while let Some(event) = event_rx.recv().await {
                     if event.get("type").and_then(Value::as_str) == Some("event")
@@ -341,7 +381,7 @@ impl Session {
                             .and_then(Value::as_u64).unwrap_or(1) as u32;
                         let reason = event.get("body").and_then(|b| b.get("reason"))
                             .and_then(Value::as_str).unwrap_or("").to_string();
-                        enrich_stopped(&hub2, &client2, &session_id, thread_id, &reason).await;
+                        enrich_stopped(&hub2, &client2, &session_id, Some(&session2), thread_id, &reason).await;
                     } else if event.get("event").and_then(Value::as_str) == Some("continued") {
                         *last_stopped2.write().await = None;
                     }
@@ -607,7 +647,7 @@ async fn attach_child_session(
                     let reason = event.get("body").and_then(|b| b.get("reason"))
                         .and_then(|v| v.as_str()).unwrap_or("").to_string();
                     broadcast_json(&hub2, &sid, event.clone()).await;
-                    enrich_stopped(&hub2, &child_client, &sid, thread_id, &reason).await;
+                    enrich_stopped(&hub2, &child_client, &sid, None, thread_id, &reason).await;
                 } else if ev_name == "continued" {
                     *last_stopped.write().await = None;
                     broadcast_json(&hub2, &sid, event.clone()).await;
@@ -646,13 +686,21 @@ async fn broadcast_json(hub: &Hub, session_id: &str, msg: Value) {
 
 /// On `stopped`: chain threads → stackTrace → scopes → variables, then push source content.
 /// If `reason` is "exception", also call `exceptionInfo` and broadcast as a synthetic event.
-async fn enrich_stopped(hub: &Hub, client: &Arc<DapClient>, session_id: &str, thread_id: u32, reason: &str) {
+/// If `session` is Some, also captures a timeline entry and evaluates watch expressions.
+async fn enrich_stopped(
+    hub: &Hub,
+    client: &Arc<DapClient>,
+    session_id: &str,
+    session: Option<&Arc<Session>>,
+    thread_id: u32,
+    reason: &str,
+) {
     // 1. threads
     let threads_resp = match client.request("threads", None).await {
         Ok(v) => { broadcast_json(hub, session_id, v.clone()).await; v }
         Err(e) => { warn!("threads failed: {e}"); return; }
     };
-    let _ = threads_resp; // used to confirm request succeeded
+    let _ = threads_resp;
 
     // 2. stackTrace
     let stack_args = serde_json::json!({
@@ -681,26 +729,125 @@ async fn enrich_stopped(hub: &Hub, client: &Arc<DapClient>, session_id: &str, th
         .map(str::to_string);
     let source_line = top.and_then(|f| f.get("line")).and_then(Value::as_u64).unwrap_or(0) as u32;
 
+    // Stack summary for timeline
+    let stack_summary: Vec<String> = frames.iter().map(|f| {
+        let fname = f.get("name").and_then(Value::as_str).unwrap_or("?");
+        let ffile = f.get("source").and_then(|s| s.get("path")).and_then(Value::as_str)
+            .map(|p| p.split('/').last().unwrap_or(p)).unwrap_or("?");
+        let fline = f.get("line").and_then(Value::as_u64).unwrap_or(0);
+        format!("{}:{} in {}()", ffile, fline, fname)
+    }).collect();
+
     // 3. scopes
     let scopes_resp = match client.request("scopes", Some(serde_json::json!({ "frameId": frame_id }))).await {
         Ok(v) => { broadcast_json(hub, session_id, v.clone()).await; v }
         Err(e) => { warn!("scopes failed: {e}"); return; }
     };
 
-    // 4. variables for each scope
+    // 4. variables for each scope — collect locals for timeline
+    let mut vars_snapshot: HashMap<String, String> = HashMap::new();
     if let Some(scopes) = scopes_resp.get("body").and_then(|b| b.get("scopes")).and_then(Value::as_array) {
-        for scope in scopes {
+        for (i, scope) in scopes.iter().enumerate() {
             let ref_ = scope.get("variablesReference").and_then(Value::as_u64).unwrap_or(0);
             if ref_ == 0 { continue; }
             let vars_args = serde_json::json!({ "variablesReference": ref_ });
             match client.request("variables", Some(vars_args)).await {
-                Ok(v) => broadcast_json(hub, session_id, v).await,
+                Ok(v) => {
+                    // Collect locals from the first (innermost) scope for the timeline
+                    if i == 0 {
+                        if let Some(vars) = v.get("body").and_then(|b| b.get("variables")).and_then(Value::as_array) {
+                            for var in vars {
+                                let name = var.get("name").and_then(Value::as_str).unwrap_or("?");
+                                let val = var.get("value").and_then(Value::as_str).unwrap_or("?");
+                                vars_snapshot.insert(name.to_string(), val.to_string());
+                            }
+                        }
+                    }
+                    broadcast_json(hub, session_id, v).await
+                }
                 Err(e) => warn!("variables({ref_}) failed: {e}"),
             }
         }
     }
 
-    // 5. exceptionInfo — if stopped on an exception, fetch and broadcast details
+    // 5. Timeline entry — only when session is provided (not for child sessions)
+    if let Some(sess) = session {
+        // Diff vars against the last timeline entry
+        let prev_vars = sess.timeline.read().await
+            .back()
+            .map(|e| e.variables_snapshot.clone())
+            .unwrap_or_default();
+        let changed_vars: Vec<String> = vars_snapshot.iter()
+            .filter(|(k, v)| prev_vars.get(*k).map(|pv| pv != *v).unwrap_or(true))
+            .map(|(k, _)| k.clone())
+            .collect();
+
+        let entry_id = sess.timeline_counter.fetch_add(1, Ordering::SeqCst);
+        let entry = TimelineEntry {
+            id: entry_id,
+            file: source_path.clone().unwrap_or_default(),
+            line: source_line,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            variables_snapshot: vars_snapshot.clone(),
+            changed_vars,
+            stack_summary: stack_summary.clone(),
+        };
+        {
+            let mut tl = sess.timeline.write().await;
+            tl.push_back(entry.clone());
+            if tl.len() > 500 { tl.pop_front(); }
+        }
+        // Broadcast timeline_entry
+        let env = WsEnvelope {
+            session_id: session_id.to_string(),
+            msg: serde_json::json!({
+                "type": "event",
+                "event": "timeline_entry",
+                "body": serde_json::to_value(&entry).unwrap_or(Value::Null)
+            }),
+        };
+        if let Ok(json) = serde_json::to_string(&env) {
+            hub.broadcast(session_id, json).await;
+        }
+
+        // 6. Evaluate watch expressions
+        let watches = sess.watches.read().await.clone();
+        if !watches.is_empty() {
+            let prev_results = sess.watch_results.read().await.clone();
+            let mut new_results: Vec<WatchResult> = Vec::new();
+            for expr in &watches {
+                let val = client.request("evaluate", Some(serde_json::json!({
+                    "expression": expr,
+                    "frameId": frame_id,
+                    "context": "watch"
+                }))).await
+                    .ok()
+                    .and_then(|r| r.get("body")?.get("result")?.as_str().map(str::to_string))
+                    .unwrap_or_else(|| "<error>".to_string());
+                let changed = prev_results.iter()
+                    .find(|r| r.expression == *expr)
+                    .map(|r| r.value != val)
+                    .unwrap_or(true);
+                new_results.push(WatchResult { expression: expr.clone(), value: val, changed });
+            }
+            *sess.watch_results.write().await = new_results.clone();
+            let env = WsEnvelope {
+                session_id: session_id.to_string(),
+                msg: serde_json::json!({
+                    "type": "event",
+                    "event": "watches_updated",
+                    "body": {
+                        "results": serde_json::to_value(&new_results).unwrap_or(Value::Null)
+                    }
+                }),
+            };
+            if let Ok(json) = serde_json::to_string(&env) {
+                hub.broadcast(session_id, json).await;
+            }
+        }
+    }
+
+    // 7. exceptionInfo — if stopped on an exception, fetch and broadcast details
     if reason == "exception" {
         match client.request("exceptionInfo", Some(serde_json::json!({ "threadId": thread_id }))).await {
             Ok(resp) => {
@@ -720,7 +867,7 @@ async fn enrich_stopped(hub: &Hub, client: &Arc<DapClient>, session_id: &str, th
         }
     }
 
-    // 6. Read source file and push as synthetic `sourceLoaded` event
+    // 8. Read source file and push as synthetic `sourceLoaded` event
     if let Some(path) = source_path {
         match tokio::fs::read_to_string(&path).await {
             Ok(content) => {

@@ -86,6 +86,8 @@ pub struct SessionState {
     pub prev_variables: std::collections::HashMap<String, String>,
     /// set of variable names that changed at last stop
     pub changed_vars: std::collections::HashSet<String>,
+    /// execution timeline (one entry per stopped event)
+    pub timeline: Vec<TimelineEntryUi>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -103,6 +105,16 @@ pub struct FindingEntry {
     pub message: String,
     pub level: String,
     pub timestamp: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TimelineEntryUi {
+    pub id: u32,
+    pub file: String,
+    pub line: u32,
+    pub timestamp: String,
+    pub changed_vars: Vec<String>,
+    pub stack_summary: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -405,6 +417,39 @@ pub fn App() -> impl IntoView {
                             }
                         });
 
+                        // Fetch /timeline to restore timeline history
+                        let session_data_tl = session_data_open.clone();
+                        let id_tl = id_open.clone();
+                        leptos::task::spawn_local(async move {
+                            if let Ok(resp) = gloo_net::http::Request::get(
+                                &format!("/timeline?session={}&limit=100", id_tl)).send().await {
+                                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                                    if let Some(arr) = json.get("timeline").and_then(|v| v.as_array()) {
+                                        let entries: Vec<TimelineEntryUi> = arr.iter().filter_map(|e| Some(TimelineEntryUi {
+                                            id: e.get("id").and_then(Value::as_u64)? as u32,
+                                            file: e.get("file").and_then(Value::as_str).unwrap_or("").to_string(),
+                                            line: e.get("line").and_then(Value::as_u64).unwrap_or(0) as u32,
+                                            timestamp: e.get("timestamp").and_then(Value::as_str).unwrap_or("").to_string(),
+                                            changed_vars: e.get("changed_vars").and_then(Value::as_array)
+                                                .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                                                .unwrap_or_default(),
+                                            stack_summary: e.get("stack_summary").and_then(Value::as_array)
+                                                .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                                                .unwrap_or_default(),
+                                        })).collect();
+                                        if !entries.is_empty() {
+                                            session_data_tl.update(|map| {
+                                                let state = map.entry(id_tl.clone()).or_insert_with(|| SessionState {
+                                                    id: id_tl.clone(), status: "running".into(), ..Default::default()
+                                                });
+                                                state.timeline = entries;
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        });
+
                         // Fetch /breakpoints to sync any breakpoints set before UI connected
                         let session_data_bp = session_data_open.clone();
                         let id_bp = id_open.clone();
@@ -624,6 +669,7 @@ pub fn App() -> impl IntoView {
                     <BreakpointsPanel session_data=session_data active_session=active_session.read_only() />
                     <FindingsPanel session_data=session_data active_session=active_session.read_only() />
                     <WatchPanel session_data=session_data active_session=active_session.read_only() />
+                    <TimelinePanel session_data=session_data active_session=active_session.read_only() />
                 </aside>
 
                 // ── Right icon rail (always visible) ──
@@ -856,6 +902,57 @@ fn handle_envelope(
                         let icon = match entry.level.as_str() { "error" => "🔴", "warning" => "🟡", _ => "🔵" };
                         push_log(state, icon, &entry.message, "log-response");
                         state.findings.push(entry);
+                    }
+                }
+                "timeline_entry" => {
+                    if let Some(b) = msg.get("body") {
+                        let entry = TimelineEntryUi {
+                            id: b.get("id").and_then(Value::as_u64).unwrap_or(0) as u32,
+                            file: b.get("file").and_then(Value::as_str).unwrap_or("").to_string(),
+                            line: b.get("line").and_then(Value::as_u64).unwrap_or(0) as u32,
+                            timestamp: b.get("timestamp").and_then(Value::as_str).unwrap_or("").to_string(),
+                            changed_vars: b.get("changed_vars").and_then(Value::as_array)
+                                .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                                .unwrap_or_default(),
+                            stack_summary: b.get("stack_summary").and_then(Value::as_array)
+                                .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                                .unwrap_or_default(),
+                        };
+                        state.timeline.push(entry);
+                        if state.timeline.len() > 500 { state.timeline.remove(0); }
+                    }
+                }
+                "watches_updated" => {
+                    // Server evaluated MCP-managed watches at stop — update results
+                    if let Some(b) = msg.get("body") {
+                        if let Some(results) = b.get("results").and_then(Value::as_array) {
+                            for r in results {
+                                let expr = r.get("expression").and_then(Value::as_str).unwrap_or("").to_string();
+                                let val = r.get("value").and_then(Value::as_str).unwrap_or("").to_string();
+                                if let Some(existing) = state.watch_results.iter_mut().find(|(e, _)| e == &expr) {
+                                    existing.1 = val;
+                                } else {
+                                    state.watch_results.push((expr, val));
+                                }
+                            }
+                        }
+                    }
+                }
+                "watches_list_changed" => {
+                    // MCP added/removed a watch — sync the expression list in watch_results
+                    if let Some(b) = msg.get("body") {
+                        if let Some(watches) = b.get("watches").and_then(Value::as_array) {
+                            let exprs: Vec<String> = watches.iter()
+                                .filter_map(Value::as_str).map(str::to_string).collect();
+                            // Remove results for deleted expressions
+                            state.watch_results.retain(|(e, _)| exprs.contains(e));
+                            // Add placeholders for new ones
+                            for expr in &exprs {
+                                if !state.watch_results.iter().any(|(e, _)| e == expr) {
+                                    state.watch_results.push((expr.clone(), "…".to_string()));
+                                }
+                            }
+                        }
                     }
                 }
                 _ => {}
@@ -2626,6 +2723,94 @@ fn WatchPanel(
                     <button class="eval-btn" on:click=move |_| add_watch(())>"+"</button>
                 </div>
             </div>
+        </div>
+    }
+}
+
+// ─────────────────────────────────────────────
+//  Timeline panel
+// ─────────────────────────────────────────────
+
+#[component]
+fn TimelinePanel(
+    session_data: RwSignal<std::collections::HashMap<String, SessionState>>,
+    active_session: ReadSignal<Option<String>>,
+) -> impl IntoView {
+    let layout = use_context::<LayoutState>().expect("no LayoutState");
+    let timeline_collapsed: RwSignal<bool> = RwSignal::new(false);
+    let active_tab = layout.active_tab;
+
+    let timeline = move || {
+        active_session.get()
+            .and_then(|id| session_data.get().get(&id).cloned())
+            .map(|s| s.timeline)
+            .unwrap_or_default()
+    };
+
+    view! {
+        <div class="panel timeline-panel" style="flex: 0 0 auto; max-height: 220px; border-top: 1px solid var(--border); overflow: hidden;">
+            <div class="panel-header" style="cursor:pointer" on:click=move |_| timeline_collapsed.update(|v| *v = !*v)>
+                <h2>
+                    {move || if timeline_collapsed.get() { "▸" } else { "▾" }}
+                    " Timeline"
+                </h2>
+                <span class="badge" style="margin-left:auto;font-size:10px;color:var(--text-dim)">
+                    {move || timeline().len()}
+                </span>
+            </div>
+            <Show when=move || !timeline_collapsed.get()>
+                <div class="panel-content scrollable" style="max-height:180px">
+                    <ul class="list-view timeline-list">
+                        <For
+                            each=move || {
+                                let mut v = timeline();
+                                v.reverse();
+                                v.into_iter().enumerate().collect::<Vec<_>>()
+                            }
+                            key=|(_, e): &(usize, TimelineEntryUi)| e.id
+                            children=move |(_, entry): (usize, TimelineEntryUi)| {
+                                let file_short = entry.file.split('/').last().unwrap_or("?").to_string();
+                                let has_changes = !entry.changed_vars.is_empty();
+                                let changed_label = if has_changes {
+                                    format!(" — {}", entry.changed_vars.join(", "))
+                                } else { String::new() };
+                                let file_for_click = entry.file.clone();
+                                view! {
+                                    <li
+                                        class="var-item timeline-item"
+                                        class:timeline-changed=has_changes
+                                        style="cursor:pointer;align-items:flex-start;padding:3px 6px"
+                                        on:click={
+                                            let file_click = file_for_click.clone();
+                                            move |_| {
+                                                if !file_click.is_empty() {
+                                                    active_tab.set(Some(file_click.clone()));
+                                                }
+                                            }
+                                        }
+                                    >
+                                        <span class="var-name" style="min-width:80px;flex-shrink:0">
+                                            {format!("{}:{}", file_short, entry.line)}
+                                        </span>
+                                        <span
+                                            class="var-value"
+                                            class:var-changed=has_changes
+                                            style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis"
+                                        >
+                                            {changed_label}
+                                        </span>
+                                    </li>
+                                }
+                            }
+                        />
+                    </ul>
+                    {move || if timeline().is_empty() {
+                        view! { <div class="empty-msg">"No stops yet"</div> }.into_any()
+                    } else {
+                        view! { <div></div> }.into_any()
+                    }}
+                </div>
+            </Show>
         </div>
     }
 }
