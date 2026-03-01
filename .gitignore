@@ -4,10 +4,16 @@ __pycache__/
 *.pyo
 .DS_Store
 *.egg-info/
-dist/
+# Allow debugium-ui dist (pre-built WASM UI bundle checked in for releases)
+crates/debugium-ui/pkg/
 build/
 node_modules/
 .gemini/
 js-debug/
 *.tar.gz
 target/
+*.png
+.playwright-mcp/
+tests/screenshots/
+SKILL.md
+test_mcp_rust*.sh

@@ -42,8 +42,8 @@ enum Commands {
         serve: bool,
 
 
-        /// Open browser automatically
-        #[arg(long)]
+        /// Open browser automatically (default: true, use --no-open-browser to disable)
+        #[arg(long, default_value_t = true)]
         open_browser: bool,
 
         /// Static assets directory (defaults to crates/debugium-ui/dist)
@@ -57,6 +57,10 @@ enum Commands {
         /// Also start the MCP stdio server (for Claude Code / LLM integration)
         #[arg(long)]
         mcp: bool,
+
+        /// Log level for debugium tracing (e.g. debug, info, warn)
+        #[arg(long, default_value = "info")]
+        log_level: String,
     },
 
     /// Attach to an already-running debug adapter on a TCP port
@@ -70,8 +74,7 @@ enum Commands {
         #[arg(long, default_value_t = true)]
         serve: bool,
 
-
-        #[arg(long)]
+        #[arg(long, default_value_t = true)]
         open_browser: bool,
 
         /// Also start the MCP stdio server
@@ -107,8 +110,15 @@ async fn main() -> Result<()> {
         .open(home.log_path())
         .ok();
 
+    // Determine log level: CLI flag (from Launch subcommand) or env var
+    let log_level_from_cli = std::env::args()
+        .skip_while(|a| a != "--log-level")
+        .nth(1)
+        .unwrap_or_else(|| "info".to_string());
+    let directive = format!("debugium={log_level_from_cli}").parse().unwrap_or_else(|_| "debugium=info".parse().unwrap());
+
     let registry = tracing_subscriber::registry()
-        .with(EnvFilter::from_default_env().add_directive("debugium=info".parse()?))
+        .with(EnvFilter::from_default_env().add_directive(directive))
         .with(stderr_layer);
 
     if let Some(file) = log_file {
@@ -132,6 +142,7 @@ async fn main() -> Result<()> {
             static_dir,
             breakpoint,
             mcp,
+            log_level: _,
         } => {
             let hub = Hub::new();
             let registry = SessionRegistry::new();
@@ -168,7 +179,8 @@ async fn main() -> Result<()> {
             };
 
             home.write_port(actual_port);
-            // Print to stderr so both users and LLM tools can discover the URL
+            // Print URL to stdout so scripts can capture it (stderr for humans)
+            println!("http://localhost:{actual_port}");
             eprintln!("[Debugium] UI ready at http://localhost:{actual_port}");
             eprintln!("[Debugium] Session: default  program: {}", program.display());
 

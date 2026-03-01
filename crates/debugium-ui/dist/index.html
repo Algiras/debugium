@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Debugium — Live Debugger</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="/style.css">
+    <!--
+      BUILD SYNC: after `wasm-pack build crates/debugium-ui --target web --out-dir pkg`, run:
+        cp crates/debugium-ui/pkg/cm_init.js          crates/debugium-ui/dist/pkg/
+        cp crates/debugium-ui/pkg/debugium_ui.js       crates/debugium-ui/dist/pkg/
+        cp crates/debugium-ui/pkg/debugium_ui_bg.wasm  crates/debugium-ui/dist/pkg/
+    -->
+    <!-- CodeMirror 6 — provides window.__cm_init / __cm_set_exec_line -->
+    <script type="module" src="/pkg/cm_init.js?v=6"></script>
+    <!-- Leptos WASM bundle -->
+    <link rel="modulepreload" href="/pkg/debugium_ui.js">
+    <link rel="preload" href="/pkg/debugium_ui_bg.wasm" as="fetch" type="application/wasm" crossorigin="">
+</head>
+
+<body>
+    <script type="module">
+        import init from '/pkg/debugium_ui.js';
+        await init();
+    </script>
+</body>
+
+</html>

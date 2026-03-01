@@ -66,6 +66,8 @@ pub struct Session {
     pub annotations: RwLock<Vec<Annotation>>,
     /// Findings / conclusions left by the LLM.
     pub findings: RwLock<Vec<Finding>>,
+    /// Rolling buffer of output lines from the debuggee (last 500).
+    pub console_lines: RwLock<std::collections::VecDeque<String>>,
     /// Increments on every `stopped` event — lets tools await the next pause.
     pub stopped_tx: Arc<tokio::sync::watch::Sender<u32>>,
     /// Last `stopped` event body — replayed to late-joining WS clients.
@@ -138,6 +140,7 @@ impl Session {
             breakpoints: RwLock::new(HashMap::new()),
             annotations: RwLock::new(Vec::new()),
             findings: RwLock::new(Vec::new()),
+            console_lines: RwLock::new(std::collections::VecDeque::new()),
             stopped_tx: stopped_tx.clone(),
             last_stopped: last_stopped_arc.clone(),
             annotation_counter: AtomicU32::new(0),
@@ -185,6 +188,7 @@ impl Session {
                 });
             }
 
+            let session2 = session.clone();
             tokio::spawn(async move {
                 while let Some(event) = event_rx.recv().await {
                     // Intercept `initialized` — fire the oneshot, don't broadcast
@@ -220,6 +224,18 @@ impl Session {
                     let ev_name = event.get("event").and_then(|v| v.as_str()).unwrap_or("?");
                     info!("[{}] DAP event: {}", session_id, ev_name);
                     broadcast_json(&hub2, &session_id, event.clone()).await;
+
+                    // Capture output events into the rolling console_lines buffer
+                    if ev_name == "output" {
+                        if let Some(output) = event.get("body").and_then(|b| b.get("output")).and_then(Value::as_str) {
+                            let line = output.trim_end_matches('\n').to_string();
+                            if !line.is_empty() {
+                                let mut buf = session2.console_lines.write().await;
+                                buf.push_back(line);
+                                if buf.len() > 500 { buf.pop_front(); }
+                            }
+                        }
+                    }
 
                     // On `stopped`: notify waiters + auto-chain data enrichment
                     if event.get("type").and_then(Value::as_str) == Some("event")
@@ -293,6 +309,7 @@ impl Session {
             breakpoints: RwLock::new(HashMap::new()),
             annotations: RwLock::new(Vec::new()),
             findings: RwLock::new(Vec::new()),
+            console_lines: RwLock::new(std::collections::VecDeque::new()),
             stopped_tx: stopped_tx.clone(),
             last_stopped: last_stopped_arc.clone(),
             annotation_counter: AtomicU32::new(0),

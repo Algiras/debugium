@@ -1,0 +1,126 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-ui:
+    name: Build WASM UI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - run: wasm-pack build crates/debugium-ui --target web --out-dir pkg
+      - run: |
+          cp crates/debugium-ui/pkg/cm_init.js         crates/debugium-ui/dist/pkg/
+          cp crates/debugium-ui/pkg/debugium_ui.js      crates/debugium-ui/dist/pkg/
+          cp crates/debugium-ui/pkg/debugium_ui_bg.wasm crates/debugium-ui/dist/pkg/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-dist
+          path: crates/debugium-ui/dist/
+
+  release:
+    name: Build Release (${{ matrix.target }})
+    needs: build-ui
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: debugium-linux-x86_64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact: debugium-linux-aarch64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: debugium-macos-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: debugium-macos-aarch64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: debugium-windows-x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: crates/debugium-ui/dist/
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cross-compilation tools (aarch64 Linux)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+
+      - name: Build
+        run: cargo build -p debugium-server --release --target ${{ matrix.target }}
+
+      - name: Package (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          cp target/${{ matrix.target }}/release/debugium debugium
+          tar -czf ${{ matrix.artifact }}.tar.gz debugium crates/debugium-ui/dist/
+          sha256sum ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.sha256
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          Copy-Item target/${{ matrix.target }}/release/debugium.exe debugium.exe
+          Compress-Archive -Path debugium.exe, crates/debugium-ui/dist/ -DestinationPath ${{ matrix.artifact }}.zip
+          (Get-FileHash ${{ matrix.artifact }}.zip -Algorithm SHA256).Hash | Out-File ${{ matrix.artifact }}.zip.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.*
+
+  publish:
+    name: Publish GitHub Release
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: debugium-*
+          merge-multiple: true
+          path: artifacts/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            **macOS / Linux (curl installer):**
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/Algiras/debugium/main/install.sh | bash
+            ```
+
+            **Or download a binary directly from the assets below.**
+
+            See [README](https://github.com/Algiras/debugium#readme) for usage.

@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: Build & Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm-pack (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Install wasm-pack (Windows)
+        if: runner.os == 'Windows'
+        run: cargo install wasm-pack
+
+      - name: Build WASM UI
+        run: wasm-pack build crates/debugium-ui --target web --out-dir pkg
+
+      - name: Sync UI dist
+        if: runner.os != 'Windows'
+        run: |
+          cp crates/debugium-ui/pkg/cm_init.js         crates/debugium-ui/dist/pkg/
+          cp crates/debugium-ui/pkg/debugium_ui.js      crates/debugium-ui/dist/pkg/
+          cp crates/debugium-ui/pkg/debugium_ui_bg.wasm crates/debugium-ui/dist/pkg/
+
+      - name: Sync UI dist (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          Copy-Item crates/debugium-ui/pkg/cm_init.js         crates/debugium-ui/dist/pkg/
+          Copy-Item crates/debugium-ui/pkg/debugium_ui.js      crates/debugium-ui/dist/pkg/
+          Copy-Item crates/debugium-ui/pkg/debugium_ui_bg.wasm crates/debugium-ui/dist/pkg/
+
+      - name: Build server
+        run: cargo build -p debugium-server --release
+
+      - name: Run tests
+        run: cargo test -p debugium-server

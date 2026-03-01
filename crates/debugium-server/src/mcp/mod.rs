@@ -388,6 +388,41 @@ fn tool_list() -> Value {
                 }
             },
             {
+                "name": "set_breakpoint",
+                "description": "Set a single breakpoint at a specific file and line. Optionally specify a condition expression. Returns the verified line number from the adapter.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string" },
+                        "file": { "type": "string", "description": "Absolute path to the source file." },
+                        "line": { "type": "integer", "description": "Line number to break on (1-indexed)." },
+                        "condition": { "type": "string", "description": "Optional condition expression — only pause when this evaluates to true." }
+                    },
+                    "required": ["file", "line"]
+                }
+            },
+            {
+                "name": "get_console_output",
+                "description": "Return recent stdout/stderr output from the debuggee process (last N lines). Useful for reading program output without UI access.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string" },
+                        "lines": { "type": "integer", "description": "Maximum number of recent lines to return. Default 50." }
+                    },
+                    "required": []
+                }
+            },
+            {
+                "name": "list_sessions",
+                "description": "List all active debug sessions with enriched metadata: program, adapter, status, port, and start time.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            },
+            {
                 "name": "set_function_breakpoints",
                 "description": "Set breakpoints on function names rather than source lines.",
                 "inputSchema": {
@@ -1012,6 +1047,80 @@ async fn dispatch_tool(
             } else {
                 Ok("No active session to disconnect.".to_string())
             }
+        }
+
+        "set_breakpoint" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
+            let file = args.get("file").and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("`file` is required"))?;
+            let line = require_u32(&args, "line")?;
+            let condition = args.get("condition").and_then(Value::as_str).map(str::to_string);
+
+            // Build breakpoints list preserving existing ones, add/replace this line
+            let mut existing: Vec<u32> = s.breakpoints.read().await
+                .get(file).cloned().unwrap_or_default();
+            if !existing.contains(&line) {
+                existing.push(line);
+            }
+            let bp_args = if let Some(cond) = &condition {
+                let specs: Vec<Value> = existing.iter().map(|&l| {
+                    if l == line { json!({ "line": l, "condition": cond }) }
+                    else { json!({ "line": l }) }
+                }).collect();
+                json!({ "source": { "path": file }, "breakpoints": specs })
+            } else {
+                let specs: Vec<Value> = existing.iter().map(|&l| json!({ "line": l })).collect();
+                json!({ "source": { "path": file }, "breakpoints": specs })
+            };
+            let resp = s.client.request("setBreakpoints", Some(bp_args)).await?;
+            let verified = resp.get("body").and_then(|b| b.get("breakpoints"))
+                .and_then(Value::as_array)
+                .and_then(|arr| arr.iter().find(|bp| {
+                    bp.get("line").and_then(Value::as_u64).unwrap_or(0) == line as u64
+                }))
+                .and_then(|bp| bp.get("line").and_then(Value::as_u64))
+                .unwrap_or(line as u64) as u32;
+            // Update stored breakpoints
+            s.breakpoints.write().await.entry(file.to_string()).or_default().push(line);
+            broadcast_breakpoints_changed(hub, session_id, file, &s.breakpoints.read().await.get(file).cloned().unwrap_or_default()).await;
+            Ok(format!("Breakpoint set at {}:{} (verified line: {})", file, line, verified))
+        }
+
+        "get_console_output" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
+            let n = args.get("lines").and_then(Value::as_u64).unwrap_or(50) as usize;
+            let buf = s.console_lines.read().await;
+            let lines: Vec<&str> = buf.iter().rev().take(n).map(|s| s.as_str()).collect();
+            let output: Vec<&str> = lines.into_iter().rev().collect();
+            if output.is_empty() {
+                Ok("(no output yet)".to_string())
+            } else {
+                Ok(output.join("\n"))
+            }
+        }
+
+        "list_sessions" => {
+            let ids = registry.list().await;
+            let mut result = Vec::new();
+            for sid in &ids {
+                if let Some(s) = registry.get(sid).await {
+                    let meta = s.meta.read().await;
+                    let entry = if let Some(m) = meta.as_ref() {
+                        json!({
+                            "id": sid,
+                            "program": m.program.display().to_string(),
+                            "adapter": m.adapter_id,
+                            "adapter_pid": m.adapter_pid,
+                            "started_at": m.started_at,
+                            "port": m.port,
+                        })
+                    } else {
+                        json!({ "id": sid, "status": "initializing" })
+                    };
+                    result.push(entry);
+                }
+            }
+            Ok(serde_json::to_string_pretty(&json!({ "sessions": result }))?)
         }
 
         _ => Err(anyhow::anyhow!("Unknown tool: {name}")),

@@ -1,0 +1,15 @@
+{
+  "name": "debugium-ui",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "debugium_ui_bg.wasm",
+    "debugium_ui.js",
+    "debugium_ui.d.ts"
+  ],
+  "main": "debugium_ui.js",
+  "types": "debugium_ui.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

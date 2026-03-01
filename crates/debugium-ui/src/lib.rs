@@ -153,6 +153,10 @@ pub struct LayoutState {
     pub active_tab: RwSignal<Option<String>>,
     /// breakpoints panel collapsed state
     pub bps_collapsed: RwSignal<bool>,
+    /// dark mode toggle
+    pub dark_mode: RwSignal<bool>,
+    /// variable name filter text
+    pub var_filter: RwSignal<String>,
 }
 
 // ─────────────────────────────────────────────
@@ -231,6 +235,8 @@ pub fn App() -> impl IntoView {
         watches: RwSignal::new(vec![]),
         active_tab: RwSignal::new(None),
         bps_collapsed: RwSignal::new(false),
+        dark_mode: RwSignal::new(false),
+        var_filter: RwSignal::new(String::new()),
     };
 
     provide_context(WsSenders(ws_senders));
@@ -339,12 +345,7 @@ pub fn App() -> impl IntoView {
                                                         id: id_state.clone(), status: "running".into(), ..Default::default()
                                                     });
                                                     s.status = "paused".into();
-                                                    s.active_thread_id = Some(thread_id);
-                                                    let reason = ev.get("body")
-                                                        .and_then(|b| b.get("reason"))
-                                                        .and_then(Value::as_str)
-                                                        .unwrap_or("breakpoint");
-                                                    s.stop_reason = reason.to_string();
+                                                    s.active_thread_id = thread_id;
                                                 });
                                                 // Request stack trace
                                                 send_cmd(&ws_senders_state, &id_state, "stackTrace",
@@ -518,6 +519,53 @@ pub fn App() -> impl IntoView {
     let nm = layout.narrow_mode;
     let lw = layout.left_width;
     let rw = layout.right_width;
+
+    // ── Dark mode: apply/remove light-mode class on <html> ────────
+    {
+        let dark_mode = layout.dark_mode;
+        Effect::new(move |_| {
+            // dark_mode=false → dark (default); dark_mode=true → light
+            let light = dark_mode.get();
+            if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                if let Some(el) = doc.document_element() {
+                    if light { let _ = el.class_list().add_1("light-mode"); }
+                    else     { let _ = el.class_list().remove_1("light-mode"); }
+                }
+            }
+        });
+    }
+
+    // ── Keyboard shortcuts (document-level) ───────────────────────
+    {
+        let ws_kb = ws_senders.clone();
+        let act_kb = active_session.clone();
+        let dm_kb = layout.dark_mode;
+        let keydown = Closure::<dyn Fn(web_sys::KeyboardEvent)>::new(move |e: web_sys::KeyboardEvent| {
+            // Don't intercept when focus is in an input/textarea
+            if let Some(target) = e.target() {
+                use wasm_bindgen::JsCast;
+                if target.dyn_ref::<web_sys::HtmlInputElement>().is_some()
+                    || target.dyn_ref::<web_sys::HtmlTextAreaElement>().is_some()
+                { return; }
+            }
+            let sid = act_kb.get_untracked().unwrap_or_else(|| "default".into());
+            match (e.key().as_str(), e.shift_key()) {
+                ("F5",  false) => { e.prevent_default(); send_cmd(&ws_kb, &sid, "continue", serde_json::json!({})); }
+                ("F10", false) => { e.prevent_default(); send_cmd(&ws_kb, &sid, "next",     serde_json::json!({ "threadId": 1 })); }
+                ("F11", false) => { e.prevent_default(); send_cmd(&ws_kb, &sid, "stepIn",   serde_json::json!({ "threadId": 1 })); }
+                ("F11", true)  => { e.prevent_default(); send_cmd(&ws_kb, &sid, "stepOut",  serde_json::json!({ "threadId": 1 })); }
+                ("d",   false) if e.meta_key() || e.ctrl_key() => {
+                    e.prevent_default();
+                    dm_kb.update(|v| *v = !*v);
+                }
+                _ => {}
+            }
+        });
+        if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+            let _ = doc.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
+        }
+        keydown.forget();
+    }
 
     // Auto-collapse sessions sidebar when only 1 session
     let multi_session = move || sessions.get().len() > 1;
@@ -1216,6 +1264,12 @@ fn Header(
                     title="Toggle Debug Console"
                     on:click=move |_| layout.console_collapsed.update(|v| *v = !*v)
                 >"⊟"</button>
+                // Dark mode toggle
+                <button
+                    class="collapse-btn"
+                    title="Toggle dark mode (Ctrl/⌘+D)"
+                    on:click=move |_| layout.dark_mode.update(|v| *v = !*v)
+                >{move || if layout.dark_mode.get() { "🌙" } else { "☀" }}</button>
             </div>
         </header>
     }
@@ -1355,6 +1409,8 @@ fn SourcePanel(
     // Track previous source_line to detect changes for path-updated flash
     let prev_line: RwSignal<Option<u32>> = RwSignal::new(None);
     let line_changed = RwSignal::new(false);
+    // Track the last source_path that was auto-followed by execution navigation
+    let last_exec_source: RwSignal<Option<String>> = RwSignal::new(None);
 
     let file_label = move || {
         let tab = active_tab.get();
@@ -1500,9 +1556,9 @@ fn SourcePanel(
                                 if let Ok(json) = serde_json::to_string(&anns) {
                                     editor::set_annotations(&json, &path_fetch);
                                 }
-                                // Sync active_tab if not already set to this path
-                                let cur_tab = active_tab_fetch.get_untracked();
-                                if cur_tab.as_deref() != Some(&path_fetch) {
+                                // Only set active_tab on initial load (when it's None).
+                                // Never overwrite a tab the user navigated to after we started the fetch.
+                                if active_tab_fetch.get_untracked().is_none() {
                                     active_tab_fetch.set(Some(path_fetch));
                                 }
                             }
@@ -1534,13 +1590,18 @@ fn SourcePanel(
     });
 
     // Also sync active_tab when source_path changes (execution navigation)
+    // Only auto-follow when execution moves to a NEW file (don't override manual tab clicks)
     Effect::new(move |_| {
         let Some(id) = active_session.get() else { return; };
         let snap = session_data.get();
         let Some(state) = snap.get(&id) else { return; };
         if let Some(path) = &state.source_path {
-            // Always follow execution when stopped (source_path set by stopped event)
-            active_tab.set(Some(path.clone()));
+            let prev = last_exec_source.get_untracked();
+            // Auto-follow only when execution jumps to a different file than before
+            if prev.as_deref() != Some(path.as_str()) {
+                last_exec_source.set(Some(path.clone()));
+                active_tab.set(Some(path.clone()));
+            }
         }
     });
 
@@ -1588,6 +1649,26 @@ fn SourcePanel(
                                         .unwrap_or(false)
                                 }
                             };
+                            // Show execution arrow when debugger is paused in this file
+                            let exec_file = file.clone();
+                            let is_exec_class = {
+                                let f = exec_file.clone();
+                                move || {
+                                    active_session_tb.get()
+                                        .and_then(|id| session_data_tb.get().get(&id).cloned())
+                                        .map(|s| s.source_path.as_deref() == Some(&f))
+                                        .unwrap_or(false)
+                                }
+                            };
+                            let is_exec_show = {
+                                let f = exec_file.clone();
+                                move || {
+                                    active_session_tb.get()
+                                        .and_then(|id| session_data_tb.get().get(&id).cloned())
+                                        .map(|s| s.source_path.as_deref() == Some(&f))
+                                        .unwrap_or(false)
+                                }
+                            };
                             let on_click = {
                                 let f = file_tab.clone();
                                 move |_| { active_tab_tb.set(Some(f.clone())); }
@@ -1617,8 +1698,12 @@ fn SourcePanel(
                                 <div
                                     class="tab-chip"
                                     class:tab-active=is_active
+                                    class:tab-exec=is_exec_class
                                     on:click=on_click
                                 >
+                                    <Show when=is_exec_show>
+                                        <span class="tab-exec-arrow" title="Debugger paused here">"▶"</span>
+                                    </Show>
                                     <Show when=has_bp>
                                         <span class="tab-bp-dot">"●"</span>
                                     </Show>
@@ -1784,6 +1869,8 @@ fn VariablesPanel(
             .unwrap_or_default()
     };
 
+    let var_filter = layout.var_filter;
+
     view! {
         <div class="panel" style=move || if layout.vars_collapsed.get() { "flex: 0 0 32px; overflow: hidden;" } else { "flex: 1; min-height: 0; overflow: hidden;" }>
             <div class="panel-header">
@@ -1795,10 +1882,30 @@ fn VariablesPanel(
                 >{move || if layout.vars_collapsed.get() { "▸" } else { "▾" }}</button>
             </div>
             <Show when=move || !layout.vars_collapsed.get()>
+            <div style="padding: 2px 6px;">
+                <input
+                    type="text"
+                    placeholder="Filter variables…"
+                    style="width:100%; box-sizing:border-box; font-size:11px; padding:2px 4px; background:var(--bg-secondary); border:1px solid var(--border); color:var(--text); border-radius:3px;"
+                    prop:value=move || var_filter.get()
+                    on:input=move |e| {
+                        use wasm_bindgen::JsCast;
+                        let val = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+                            .map(|i| i.value()).unwrap_or_default();
+                        var_filter.set(val);
+                    }
+                />
+            </div>
             <div class="panel-content scrollable">
                 <ul class="list-view">
                     <For
-                        each=vars
+                        each=move || {
+                            let filter = var_filter.get();
+                            let filter = filter.to_lowercase();
+                            vars().into_iter().filter(move |v| {
+                                filter.is_empty() || v.name.to_lowercase().contains(&filter)
+                            }).collect::<Vec<_>>()
+                        }
                         key=|v| format!("{}={}@{}", v.name, v.value, v.variables_reference)
                         children={
                             let ws_senders2 = ws_senders.clone();

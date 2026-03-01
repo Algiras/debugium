@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "debugium": {
+      "command": "debugium",
+      "args": ["mcp"],
+      "description": "Debugium — real-time debugger MCP integration. Provides tools to inspect paused programs, set breakpoints, step through code, and annotate the UI."
+    }
+  }
+}
