@@ -13,6 +13,7 @@ js-debug/
 *.tar.gz
 target/
 *.png
+!docs/screenshot.png
 .playwright-mcp/
 tests/screenshots/
 SKILL.md

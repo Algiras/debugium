@@ -5,6 +5,9 @@
 Debug Python, JavaScript/TypeScript, and Rust programs from your browser — with AI-driven analysis through the [Model Context Protocol](https://modelcontextprotocol.io/).
 
 [![CI](https://github.com/Algiras/debugium/actions/workflows/ci.yml/badge.svg)](https://github.com/Algiras/debugium/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-algiras.github.io%2Fdebugium-blue)](https://algiras.github.io/debugium)
+
+![Debugium UI — paused at a breakpoint in cache.py with variables panel showing key, self, and value](docs/screenshot.png)
 
 ---
 
