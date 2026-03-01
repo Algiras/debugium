@@ -37,17 +37,16 @@ jobs:
       - name: Build WASM UI
         run: wasm-pack build crates/debugium-ui --target web --out-dir pkg
 
-      - name: Sync UI dist
+      # cm_init.js is a custom file checked into dist/pkg/ — only copy wasm-pack outputs
+      - name: Sync WASM outputs to dist (Linux/macOS)
         if: runner.os != 'Windows'
         run: |
-          cp crates/debugium-ui/pkg/cm_init.js         crates/debugium-ui/dist/pkg/
           cp crates/debugium-ui/pkg/debugium_ui.js      crates/debugium-ui/dist/pkg/
           cp crates/debugium-ui/pkg/debugium_ui_bg.wasm crates/debugium-ui/dist/pkg/
 
-      - name: Sync UI dist (Windows)
+      - name: Sync WASM outputs to dist (Windows)
         if: runner.os == 'Windows'
         run: |
-          Copy-Item crates/debugium-ui/pkg/cm_init.js         crates/debugium-ui/dist/pkg/
           Copy-Item crates/debugium-ui/pkg/debugium_ui.js      crates/debugium-ui/dist/pkg/
           Copy-Item crates/debugium-ui/pkg/debugium_ui_bg.wasm crates/debugium-ui/dist/pkg/
 

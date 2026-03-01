@@ -20,8 +20,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
       - run: wasm-pack build crates/debugium-ui --target web --out-dir pkg
+      # cm_init.js is a custom file checked into dist/pkg/ — only copy wasm-pack outputs
       - run: |
-          cp crates/debugium-ui/pkg/cm_init.js         crates/debugium-ui/dist/pkg/
           cp crates/debugium-ui/pkg/debugium_ui.js      crates/debugium-ui/dist/pkg/
           cp crates/debugium-ui/pkg/debugium_ui_bg.wasm crates/debugium-ui/dist/pkg/
       - uses: actions/upload-artifact@v4
