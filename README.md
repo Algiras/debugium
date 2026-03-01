@@ -33,7 +33,7 @@ Debug Python, JavaScript/TypeScript, and Rust programs from your browser — wit
 /plugin install debugium@debugium
 ```
 
-Then add to your project's `.mcp.json` (see [MCP config](#mcp-config) below).
+Then add to your project's `.mcp.json` (see [MCP Tools](#mcp-tools) below).
 
 ### macOS / Linux binary
 
