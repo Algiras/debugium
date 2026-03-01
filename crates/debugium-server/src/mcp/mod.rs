@@ -1612,8 +1612,18 @@ fn parse_breakpoint_strings(raw: &[String]) -> Vec<(String, Vec<u32>)> {
 
 /// Kill a process by PID (best-effort).
 fn nix_kill(pid: u32) -> bool {
-    unsafe {
-        libc::kill(pid as i32, libc::SIGTERM) == 0
+    #[cfg(unix)]
+    {
+        unsafe { libc::kill(pid as i32, libc::SIGTERM) == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        // On Windows, use taskkill
+        std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/F"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
     }
 }
 
