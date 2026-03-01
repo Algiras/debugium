@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   build-ui:
@@ -124,3 +125,18 @@ jobs:
             **Or download a binary directly from the assets below.**
 
             See [README](https://github.com/Algiras/debugium#readme) for usage.
+
+  publish-npm:
+    name: Publish Claude Code plugin to npm
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Publish @algiras/debugium
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
