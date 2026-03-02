@@ -2232,8 +2232,8 @@ fn SourcePanel(
                         <h3>"Start a debug session"</h3>
                         <p>"Launch from terminal, then use the toolbar or F-keys to step."</p>
                         <div class="onboarding-cmd-list">
-                            <code>"debugium launch app.py --adapter python --breakpoint /abs/path/app.py:42"</code>
-                            <code>"debugium launch app.js --adapter node --breakpoint /abs/path/app.js:15"</code>
+                            <code>"debugium launch app.py --adapter python -b app.py:42"</code>
+                            <code>"debugium launch app.js --adapter node -b app.js:15 -b app.js:30"</code>
                         </div>
                     </div>
                 </Show>

@@ -56,8 +56,12 @@ enum Commands {
         #[arg(long)]
         static_dir: Option<PathBuf>,
 
-        /// Initial breakpoints: --breakpoint /abs/path/file.py:42
-        #[arg(short, long, value_name = "FILE:LINE")]
+        /// Initial breakpoints (repeatable).
+        /// Examples:
+        ///   --breakpoint /abs/path/file.py:42
+        ///   -b file.py:10 -b file.py:20 -b other.py:5
+        ///   --breakpoint file.py:10,15,20   (multiple lines in one file)
+        #[arg(short, long, value_name = "FILE:LINE[,LINE…]")]
         breakpoint: Vec<String>,
 
         /// Explicit path to a dap.json config file (alternative to --adapter <path>.json)
@@ -498,9 +502,11 @@ fn parse_config_breakpoints(bps: &[serde_json::Value]) -> Vec<(String, Vec<u32>)
 fn parse_breakpoints(raw: &[String]) -> Vec<(String, Vec<u32>)> {
     let mut map: std::collections::HashMap<String, Vec<u32>> = std::collections::HashMap::new();
     for bp in raw {
-        if let Some((file, line_str)) = bp.rsplit_once(':') {
-            if let Ok(line) = line_str.parse::<u32>() {
-                map.entry(file.to_string()).or_default().push(line);
+        if let Some((file, lines_str)) = bp.rsplit_once(':') {
+            for tok in lines_str.split(',') {
+                if let Ok(line) = tok.trim().parse::<u32>() {
+                    map.entry(file.to_string()).or_default().push(line);
+                }
             }
         }
     }
