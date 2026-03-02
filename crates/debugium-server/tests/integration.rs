@@ -335,7 +335,7 @@ fn a1_initialize_returns_protocol_version() {
     p.stop();
     assert_eq!(
         r["result"]["protocolVersion"].as_str(),
-        Some("2024-11-05"),
+        Some("2025-11-25"),
         "unexpected response: {r}"
     );
 }
@@ -443,7 +443,7 @@ fn d1_initialize_works_without_server() {
     p.stop();
     assert_eq!(
         r["result"]["protocolVersion"].as_str(),
-        Some("2024-11-05"),
+        Some("2025-11-25"),
         "unexpected: {r}"
     );
 }
@@ -568,7 +568,7 @@ fn n1_mcp_no_server_initialize_ok_tool_call_errors() {
     let r = p.initialize();
     assert_eq!(
         r["result"]["protocolVersion"].as_str(),
-        Some("2024-11-05"),
+        Some("2025-11-25"),
         "{r}"
     );
     let r = p.tool_call("get_sessions", serde_json::json!({}));
@@ -1248,7 +1248,7 @@ fn o1_launch_mcp_flag_stdio_and_http() {
     let mut resp = String::new();
     reader.read_line(&mut resp).unwrap();
     let r: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
-    assert_eq!(r["result"]["protocolVersion"].as_str(), Some("2024-11-05"), "{r}");
+    assert_eq!(r["result"]["protocolVersion"].as_str(), Some("2025-11-25"), "{r}");
 
     let call = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_sessions","arguments":{}}});
     child.stdin.as_mut().unwrap()

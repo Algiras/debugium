@@ -5,7 +5,7 @@ description: Drive live debug sessions for Python, Node.js, TypeScript, C, C++, 
 
 # Debugium Debugger Skill
 
-Debugium is a DAP (Debug Adapter Protocol) client with an MCP interface. You can control any active debug session — set breakpoints, step through code, inspect live values, record findings, and annotate the source editor.
+Debugium is a DAP (Debug Adapter Protocol) client with an MCP interface and a real-time web UI. You can control any active debug session — set breakpoints, step through code, inspect live values, record findings, and annotate the source editor.
 
 ---
 
@@ -15,7 +15,6 @@ Debugium is a DAP (Debug Adapter Protocol) client with an MCP interface. You can
 
 ```bash
 cargo install --path crates/debugium-server
-# or: cargo build -p debugium-server && cp target/debug/debugium ~/.cargo/bin/
 ```
 
 ### 2. Register MCP server
@@ -44,39 +43,55 @@ Add to `.mcp.json` (project root) or `~/.claude.json`:
 **Preferred**: use a `dap.json` config from `examples/`. All paths must be absolute.
 
 ```bash
-# Python
+# Python — multiple breakpoints with -b
 debugium launch /abs/path/script.py --config examples/python.dap.json \
-  --breakpoint "/abs/path/script.py:42"
+  -b /abs/path/script.py:42 -b /abs/path/script.py:67
+
+# Comma-separated lines in one file
+debugium launch /abs/path/script.py --adapter python \
+  --breakpoint /abs/path/script.py:10,15,20
 
 # Node.js
 debugium launch /abs/path/app.js --config examples/node.dap.json \
-  --breakpoint "/abs/path/app.js:15"
+  -b /abs/path/app.js:15 -b /abs/path/app.js:30
 
 # TypeScript
 debugium launch /abs/path/app.ts --config examples/typescript.dap.json \
-  --breakpoint "/abs/path/app.ts:10"
+  -b /abs/path/app.ts:10
 
 # C / C++ (compile with debug symbols first: cc -g -O0)
 debugium launch /tmp/a.out --config examples/c-cpp.dap.json \
-  --breakpoint "/abs/path/main.c:20"
+  -b /abs/path/main.c:20
 
 # Rust (cargo build first)
 debugium launch ./target/debug/myapp --config examples/c-cpp.dap.json \
-  --breakpoint "/abs/path/src/main.rs:10"
+  -b /abs/path/src/main.rs:10
 
 # Remote attach (debugpy already listening on 127.0.0.1:5678)
 python3 -m debugpy --listen 127.0.0.1:5678 --wait-for-client app.py &
 debugium launch app.py --config examples/remote-python.dap.json \
-  --breakpoint "/abs/path/app.py:42"
+  -b /abs/path/app.py:42
 ```
 
-**Shorthand** (Python only): `debugium launch script.py --adapter python --breakpoint ...`
+**Shorthand** (Python only): `debugium launch script.py --adapter python -b ...`
 
-**Auto-discovery**: place `dap.json` in project root, then just `debugium launch program --breakpoint ...`
+**Auto-discovery**: place `dap.json` in project root, then just `debugium launch program -b ...`
 
 ### 5. Verify connection
 
 Call `get_sessions` — if empty, the server isn't running. Launch a session first.
+
+---
+
+## Web UI
+
+The debugger launches a web UI automatically (unless `--no-open-browser`). Features:
+
+- **Layout presets**: Slim (source only), Std (console collapsed), Full (everything open)
+- **Light/Dark mode**: toggle with Ctrl/Cmd+D or the header button
+- **Panels**: Source, Console, Variables, Stack, Breakpoints, Watch, Findings, Timeline
+- **Icon toolbar**: Continue, Pause, Step In/Over/Out, Stop, Restart (F-key shortcuts)
+- **AI activity**: LLM tool calls are shown in real-time via the console
 
 ---
 
@@ -86,7 +101,7 @@ Call `get_sessions` — if empty, the server isn't running. Launch a session fir
 
 ```
 1. launch_session        – start a debug session (or get_sessions if one is already running)
-2. get_debug_context     – orient: paused_at + locals + call_stack + source window + breakpoints in ONE call
+2. get_debug_context     – orient: paused_at + locals + call_stack + source_window + breakpoints in ONE call
 3. evaluate / get_variables  – inspect specific values
 4. step_over / step_in   – advance (blocking: waits for pause, safe to chain)
 5. get_debug_context     – re-orient after stepping
@@ -342,6 +357,30 @@ Continue until any exception is raised.
 {}
 ```
 
+#### `compare_snapshots`
+Diff variable snapshots between two timeline stops.
+```json
+{ "stop_a": 3, "stop_b": 7 }
+```
+
+#### `find_first_change`
+Find the first timeline stop where a variable changed (optionally from an expected value).
+```json
+{ "variable_name": "counter", "expected_value": "0" }
+```
+
+#### `get_call_tree`
+Stack + locals for each frame in one call.
+```json
+{ "max_depth": 5 }
+```
+
+#### `step_until_change`
+Step until a variable's value changes.
+```json
+{ "variable_name": "status", "max_steps": 20 }
+```
+
 ---
 
 ## Supported Adapters
@@ -359,6 +398,21 @@ Continue until any exception is raised.
 | Any adapter | `--config dap.json`           | See `dap.json.example`                | ✅ |
 
 Remote attach is supported via `dap.json` with `host` + `port` fields (no local adapter needed).
+
+---
+
+## CLI Breakpoint Syntax
+
+```bash
+# Repeated -b flags (short for --breakpoint)
+debugium launch app.py --adapter python -b app.py:10 -b app.py:20 -b other.py:5
+
+# Comma-separated lines in one file
+debugium launch app.py --adapter python --breakpoint app.py:10,15,20
+
+# Mix both
+debugium launch app.py --adapter python -b app.py:10,20 -b other.py:5
+```
 
 ---
 

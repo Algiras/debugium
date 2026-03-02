@@ -1,11 +1,11 @@
 ---
 name: Debugium DAP Debugger
-description: Drive live debug sessions for Python, Node.js, TypeScript, and Rust using the Debugium MCP tools. Use when asked to debug code, set breakpoints, inspect variables, step through execution, trace bugs, or find why something crashes.
+description: Drive live debug sessions for Python, Node.js, TypeScript, C, C++, Rust, Java, Scala, and WebAssembly using the Debugium MCP tools. Use when asked to debug code, set breakpoints, inspect variables, step through execution, trace bugs, or find why something crashes.
 ---
 
 # Debugium Debugger Skill
 
-Debugium is a DAP (Debug Adapter Protocol) client with an MCP interface. You can control any active debug session — set breakpoints, step through code, inspect live values, record findings, and annotate the source editor.
+Debugium is a DAP (Debug Adapter Protocol) client with an MCP interface and a real-time web UI. You can control any active debug session — set breakpoints, step through code, inspect live values, record findings, and annotate the source editor.
 
 ---
 
@@ -14,17 +14,32 @@ Debugium is a DAP (Debug Adapter Protocol) client with an MCP interface. You can
 ### 1. Launch a session
 
 ```bash
-# Python
-debugium launch /abs/path/to/script.py --adapter python --breakpoint /abs/path/to/script.py:42
+# Python — multiple breakpoints with -b
+debugium launch /abs/path/to/script.py --adapter python \
+  -b /abs/path/to/script.py:42 -b /abs/path/to/script.py:67
+
+# Comma-separated lines in one file
+debugium launch /abs/path/to/script.py --adapter python \
+  --breakpoint /abs/path/to/script.py:10,15,20
 
 # Node.js / JavaScript
-debugium launch /abs/path/to/app.js --adapter node --breakpoint /abs/path/to/app.js:15
+debugium launch /abs/path/to/app.js --adapter node \
+  -b /abs/path/to/app.js:15 -b /abs/path/to/app.js:30
 
-# TypeScript (via ts-node)
-debugium launch /abs/path/to/app.ts --adapter node
+# TypeScript (via tsx or ts-node)
+debugium launch /abs/path/to/app.ts --adapter node -b /abs/path/to/app.ts:10
 
-# Rust (build first)
-cargo build && debugium launch ./target/debug/my_program --adapter lldb --breakpoint /abs/path/src/main.rs:60
+# C / C++ (compile with -g -O0 first)
+debugium launch /tmp/a.out --config examples/c-cpp.dap.json -b /abs/path/main.c:20
+
+# Rust (cargo build first)
+cargo build && debugium launch ./target/debug/my_program --adapter lldb \
+  -b /abs/path/src/main.rs:60
+
+# Remote attach (debugpy already listening on 127.0.0.1:5678)
+python3 -m debugpy --listen 127.0.0.1:5678 --wait-for-client app.py &
+debugium launch app.py --config examples/remote-python.dap.json \
+  -b /abs/path/app.py:42
 ```
 
 ### 2. Add to `.mcp.json` (project root) or `~/.claude.json`
@@ -42,18 +57,31 @@ cargo build && debugium launch ./target/debug/my_program --adapter lldb --breakp
 
 ---
 
+## Web UI
+
+The debugger launches a web UI automatically (unless `--no-open-browser`). Features:
+
+- **Layout presets**: Slim (source only), Std (console collapsed), Full (everything open)
+- **Light/Dark mode**: toggle with Ctrl/Cmd+D or the header button
+- **Panels**: Source, Console, Variables, Stack, Breakpoints, Watch, Findings, Timeline
+- **Icon toolbar**: Continue, Pause, Step In/Over/Out, Stop, Restart (F-key shortcuts)
+- **AI activity**: LLM tool calls are shown in real-time via the console
+
+---
+
 ## Debugging Workflow
 
 ### Standard loop
 
 ```
-1. get_sessions          – confirm session is active (empty = server not running)
-2. get_debug_context     – orient: paused_at + locals + call_stack + source window + breakpoints in ONE call
+1. launch_session        – start a debug session (or get_sessions if one is already running)
+2. get_debug_context     – orient: paused_at + locals + call_stack + source_window + breakpoints in ONE call
 3. evaluate / get_variables  – inspect specific values
 4. step_over / step_in   – advance (blocking: waits for pause, safe to chain)
 5. get_debug_context     – re-orient after stepping
 6. annotate / add_finding – record conclusions in the UI
 7. Repeat 3–6 as needed
+8. stop_session          – clean up when done
 ```
 
 **Key insight**: `get_debug_context` replaces the old 7-call chain of
@@ -64,6 +92,19 @@ cargo build && debugium launch ./target/debug/my_program --adapter lldb --breakp
 ## Tool Reference
 
 ### Session
+
+#### `launch_session`
+Launch a new debug session autonomously — no human intervention needed. Spawns the adapter, sets breakpoints, waits until paused.
+```json
+{ "program": "/abs/path/script.py", "adapter": "python", "breakpoints": ["/abs/path/script.py:42"] }
+```
+Returns `{ "session_id": "...", "status": "paused" | "running" }`. Use the returned `session_id` for all subsequent tool calls.
+
+#### `stop_session`
+Stop and clean up a debug session. Sends disconnect, kills adapter, removes from registry.
+```json
+{ "session_id": "session-123" }
+```
 
 #### `get_sessions` / `list_sessions`
 List active sessions. Empty = server not started.
@@ -290,16 +331,62 @@ Continue until any exception is raised.
 {}
 ```
 
+#### `compare_snapshots`
+Diff variable snapshots between two timeline stops.
+```json
+{ "stop_a": 3, "stop_b": 7 }
+```
+
+#### `find_first_change`
+Find the first timeline stop where a variable changed (optionally from an expected value).
+```json
+{ "variable_name": "counter", "expected_value": "0" }
+```
+
+#### `get_call_tree`
+Stack + locals for each frame in one call.
+```json
+{ "max_depth": 5 }
+```
+
+#### `step_until_change`
+Step until a variable's value changes.
+```json
+{ "variable_name": "status", "max_steps": 20 }
+```
+
 ---
 
-## Adapter Notes
+## Supported Adapters
 
-| Language   | Flag                | Prerequisite                       |
-|------------|---------------------|------------------------------------|
-| Python     | `--adapter python`  | `pip install debugpy`              |
-| JavaScript | `--adapter node`    | Bundled js-debug                   |
-| TypeScript | `--adapter node`    | `ts-node` in PATH                  |
-| Rust       | `--adapter lldb`    | `codelldb` in PATH + `cargo build` |
+| Language     | `--adapter` flag              | Prerequisite                          | Verified |
+|-------------|-------------------------------|---------------------------------------|----------|
+| Python      | `python` / `debugpy`          | `pip install debugpy`                 | ✅ |
+| Node.js     | `node` / `js`                 | js-debug (bundled)                    | ✅ |
+| TypeScript  | `typescript` / `ts` / `tsx`   | js-debug + `tsx` or `ts-node`         | ✅ |
+| C / C++     | `lldb` / `codelldb`           | `lldb-dap`                            | ✅ |
+| Rust        | `lldb` / `rust`               | `lldb-dap` + `cargo build`            | ✅ |
+| Java        | `java` / `jvm`                | microsoft/java-debug adapter JAR      | ✅ |
+| Scala       | `--config scala-jvm.dap.json` | `scalac` + Scala library JAR          | ✅ |
+| WebAssembly | `--config wasm.dap.json`      | `wasmtime` + `lldb-dap` (LLVM ≥16)   | ✅ |
+| Any adapter | `--config dap.json`           | See `dap.json.example`                | ✅ |
+
+Remote attach is supported via `dap.json` with `host` + `port` fields (no local adapter needed).
+
+---
+
+## CLI Breakpoint Syntax
+
+```bash
+# Repeated -b flags (short for --breakpoint)
+debugium launch app.py --adapter python -b app.py:10 -b app.py:20 -b other.py:5
+
+# Comma-separated lines in one file
+debugium launch app.py --adapter python --breakpoint app.py:10,15,20
+
+# Mix both
+debugium launch app.py --adapter python -b app.py:10,20 -b other.py:5
+```
 
 ---
 
