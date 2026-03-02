@@ -562,6 +562,59 @@ fn tool_list() -> Value {
                         "session_id":   { "type": "string" }
                     }
                 }
+            },
+            {
+                "name": "compare_snapshots",
+                "description": "Diff the variable snapshots between two timeline stops. Returns added/removed/changed variables — no new DAP calls needed. Use get_timeline first to find stop IDs.",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["stop_a", "stop_b"],
+                    "properties": {
+                        "stop_a":     { "type": "integer", "description": "Timeline entry ID of the earlier stop." },
+                        "stop_b":     { "type": "integer", "description": "Timeline entry ID of the later stop." },
+                        "session_id": { "type": "string" }
+                    }
+                }
+            },
+            {
+                "name": "find_first_change",
+                "description": "Scan the timeline oldest-first and return the stop where a variable first changed. If expected_value is given, returns the first stop where the value differs from expected_value; otherwise returns the first stop where it differs from the initial (entry 0) value.",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["variable_name"],
+                    "properties": {
+                        "variable_name":  { "type": "string", "description": "Name of the variable to track." },
+                        "expected_value": { "type": "string", "description": "If set, return first stop where value != expected_value. If omitted, return first stop where value differs from the initial stop." },
+                        "session_id":     { "type": "string" }
+                    }
+                }
+            },
+            {
+                "name": "get_call_tree",
+                "description": "Return the current call stack with locals for each frame — eliminates the need for get_stack_trace + N×(get_scopes + get_variables) round-trips. Useful for isolating bugs that span multiple frames.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "max_depth":  { "type": "integer", "description": "Maximum number of frames to inspect (default 5)." },
+                        "thread_id":  { "type": "integer", "description": "Thread ID (default: paused thread)." },
+                        "session_id": { "type": "string" }
+                    },
+                    "required": []
+                }
+            },
+            {
+                "name": "step_until_change",
+                "description": "Step over instructions until a named variable changes value (or max_steps is reached). Eliminates manual step→evaluate→compare loops.",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["variable_name"],
+                    "properties": {
+                        "variable_name": { "type": "string", "description": "Variable to watch for changes." },
+                        "max_steps":     { "type": "integer", "description": "Maximum step_over calls before giving up (default 20)." },
+                        "thread_id":     { "type": "integer", "description": "Thread ID (default 1)." },
+                        "session_id":    { "type": "string" }
+                    }
+                }
             }
         ]
     })
@@ -1590,6 +1643,246 @@ pub async fn dispatch_tool(
             registry.remove(session_id).await;
 
             Ok(format!("Session '{session_id}' stopped and removed."))
+        }
+
+        // ── New compound tools ─────────────────────────────────────
+        "compare_snapshots" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
+            let stop_a = args.get("stop_a").and_then(Value::as_u64)
+                .ok_or_else(|| anyhow::anyhow!("`stop_a` is required"))? as u32;
+            let stop_b = args.get("stop_b").and_then(Value::as_u64)
+                .ok_or_else(|| anyhow::anyhow!("`stop_b` is required"))? as u32;
+            broadcast_llm_query(hub, session_id, "compare_snapshots",
+                &format!("stop {} vs {}", stop_a, stop_b)).await;
+            let tl = s.timeline.read().await;
+            let entry_a = tl.iter().find(|e| e.id == stop_a)
+                .ok_or_else(|| anyhow::anyhow!("Timeline stop {} not found", stop_a))?;
+            let entry_b = tl.iter().find(|e| e.id == stop_b)
+                .ok_or_else(|| anyhow::anyhow!("Timeline stop {} not found", stop_b))?;
+            let snap_a = &entry_a.variables_snapshot;
+            let snap_b = &entry_b.variables_snapshot;
+            let mut added = serde_json::Map::new();
+            let mut removed = serde_json::Map::new();
+            let mut changed = serde_json::Map::new();
+            let mut unchanged_count: usize = 0;
+            for (k, v_b) in snap_b {
+                match snap_a.get(k) {
+                    None => { added.insert(k.clone(), json!(v_b)); }
+                    Some(v_a) if v_a != v_b => {
+                        changed.insert(k.clone(), json!({ "from": v_a, "to": v_b }));
+                    }
+                    _ => { unchanged_count += 1; }
+                }
+            }
+            for k in snap_a.keys() {
+                if !snap_b.contains_key(k) {
+                    removed.insert(k.clone(), json!(snap_a[k]));
+                }
+            }
+            Ok(serde_json::to_string_pretty(&json!({
+                "stop_a": { "id": entry_a.id, "file": entry_a.file, "line": entry_a.line, "timestamp": entry_a.timestamp },
+                "stop_b": { "id": entry_b.id, "file": entry_b.file, "line": entry_b.line, "timestamp": entry_b.timestamp },
+                "added": added,
+                "removed": removed,
+                "changed": changed,
+                "unchanged_count": unchanged_count
+            }))?)
+        }
+
+        "find_first_change" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
+            let var_name = args.get("variable_name").and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("`variable_name` is required"))?;
+            let expected = args.get("expected_value").and_then(Value::as_str).map(str::to_string);
+            broadcast_llm_query(hub, session_id, "find_first_change", var_name).await;
+            let tl = s.timeline.read().await;
+            // Collect entries oldest-first (timeline is stored newest-last already)
+            let entries: Vec<_> = tl.iter().collect();
+            let baseline = if let Some(ref exp) = expected {
+                exp.clone()
+            } else {
+                // Use the initial observed value from the first entry that has this variable
+                entries.iter()
+                    .find_map(|e| e.variables_snapshot.get(var_name).cloned())
+                    .unwrap_or_default()
+            };
+            let total = entries.len();
+            let first_change = entries.iter().enumerate().find_map(|(i, e)| {
+                let val = e.variables_snapshot.get(var_name)?;
+                // Skip the very first entry when no expected_value: that's our baseline
+                if expected.is_none() && i == 0 { return None; }
+                if val != &baseline {
+                    let old = if i > 0 {
+                        entries[i - 1].variables_snapshot.get(var_name).cloned()
+                    } else {
+                        None
+                    };
+                    Some(json!({
+                        "stop_id": e.id,
+                        "file": e.file,
+                        "line": e.line,
+                        "timestamp": e.timestamp,
+                        "old": old.as_deref().unwrap_or(&baseline),
+                        "new": val
+                    }))
+                } else {
+                    None
+                }
+            });
+            Ok(serde_json::to_string_pretty(&json!({
+                "variable": var_name,
+                "baseline_value": baseline,
+                "first_change_at": first_change,
+                "total_stops_searched": total
+            }))?)
+        }
+
+        "get_call_tree" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
+            let max_depth = args.get("max_depth").and_then(Value::as_u64).unwrap_or(5) as usize;
+            let thread_id = if let Some(t) = args.get("thread_id").and_then(Value::as_u64) {
+                t as u32
+            } else {
+                paused_thread_id(&s).await
+            };
+            broadcast_command(hub, session_id, "stackTrace").await;
+            let stack_resp = s.client.request("stackTrace", Some(json!({
+                "threadId": thread_id, "startFrame": 0, "levels": max_depth
+            }))).await?;
+            let frames = stack_resp.get("body").and_then(|b| b.get("stackFrames"))
+                .and_then(Value::as_array).cloned().unwrap_or_default();
+
+            let mut call_tree: Vec<Value> = Vec::new();
+            for (depth, frame) in frames.iter().take(max_depth).enumerate() {
+                let frame_id = frame.get("id").and_then(Value::as_u64).unwrap_or(1) as u32;
+                let file = frame.get("source").and_then(|s| s.get("path"))
+                    .and_then(Value::as_str).unwrap_or("?").to_string();
+                let line = frame.get("line").and_then(Value::as_u64).unwrap_or(0);
+                let func = frame.get("name").and_then(Value::as_str).unwrap_or("?").to_string();
+
+                // Fetch locals for this frame
+                let mut locals = serde_json::Map::new();
+                if let Ok(scopes_resp) = s.client.request("scopes",
+                    Some(json!({ "frameId": frame_id }))).await {
+                    let scopes = scopes_resp.get("body").and_then(|b| b.get("scopes"))
+                        .and_then(Value::as_array).cloned().unwrap_or_default();
+                    let locals_scope = scopes.iter().find(|sc| {
+                        sc.get("name").and_then(Value::as_str)
+                            .map(|n| n.to_lowercase().contains("local") || n.to_lowercase().contains("function"))
+                            .unwrap_or(false)
+                    }).or_else(|| scopes.first());
+                    if let Some(sc) = locals_scope {
+                        if let Some(vref) = sc.get("variablesReference").and_then(Value::as_u64) {
+                            if vref > 0 {
+                                if let Ok(vars_resp) = s.client.request("variables",
+                                    Some(json!({ "variablesReference": vref }))).await {
+                                    if let Some(vars) = vars_resp.get("body")
+                                        .and_then(|b| b.get("variables"))
+                                        .and_then(Value::as_array) {
+                                        for v in vars.iter().take(20) {
+                                            let vname = v.get("name").and_then(Value::as_str).unwrap_or("?");
+                                            let val   = v.get("value").and_then(Value::as_str).unwrap_or("?");
+                                            let typ   = v.get("type").and_then(Value::as_str).unwrap_or("");
+                                            let entry = if typ.is_empty() { val.to_string() }
+                                                        else { format!("{val} ({typ})") };
+                                            locals.insert(vname.to_string(), json!(entry));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                call_tree.push(json!({
+                    "depth": depth,
+                    "file": file,
+                    "line": line,
+                    "function": func,
+                    "frame_id": frame_id,
+                    "locals": locals
+                }));
+            }
+            Ok(serde_json::to_string_pretty(&call_tree)?)
+        }
+
+        "step_until_change" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
+            let var_name = args.get("variable_name").and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("`variable_name` is required"))?;
+            let max_steps = args.get("max_steps").and_then(Value::as_u64).unwrap_or(20) as usize;
+            let thread_id = args.get("thread_id").and_then(Value::as_u64).unwrap_or(1) as u32;
+
+            // Get the current value via evaluate
+            let get_value = |s: &Arc<crate::dap::session::Session>, tid: u32, expr: &str| {
+                let s = s.clone();
+                let expr = expr.to_string();
+                async move {
+                    let st = s.client.request("stackTrace",
+                        Some(json!({ "threadId": tid, "startFrame": 0, "levels": 1 }))).await;
+                    let frame_id = st.ok()
+                        .and_then(|r| r.get("body")?.get("stackFrames")?.as_array()?.first().cloned())
+                        .and_then(|f| f.get("id")?.as_u64())
+                        .unwrap_or(1) as u32;
+                    s.client.request("evaluate", Some(json!({
+                        "expression": expr,
+                        "frameId": frame_id,
+                        "context": "watch"
+                    }))).await
+                        .ok()
+                        .and_then(|r| r.get("body")?.get("result")?.as_str().map(str::to_string))
+                        .unwrap_or_else(|| "<error>".to_string())
+                }
+            };
+
+            let initial_value = get_value(&s, thread_id, var_name).await;
+            broadcast_command(hub, session_id, &format!("step_until_change:{var_name}")).await;
+
+            let mut steps = 0usize;
+            let mut final_value = initial_value.clone();
+            let mut changed = false;
+            while steps < max_steps {
+                let mut stopped_rx = s.stopped_tx.subscribe();
+                s.client.request("next", Some(json!({ "threadId": thread_id }))).await?;
+                await_stopped(&s, &mut stopped_rx).await;
+                steps += 1;
+
+                final_value = get_value(&s, thread_id, var_name).await;
+                if final_value != initial_value {
+                    changed = true;
+                    break;
+                }
+            }
+
+            // Get current location for context
+            let loc = s.last_stopped.read().await;
+            let paused_at = loc.as_ref()
+                .and_then(|ev| ev.get("body"))
+                .map(|_| {
+                    // Read from stack in a best-effort way
+                    json!(null)
+                });
+            drop(loc);
+
+            // Get actual location via stack trace (best-effort)
+            let paused_info = s.client.request("stackTrace",
+                Some(json!({ "threadId": thread_id, "startFrame": 0, "levels": 1 }))).await
+                .ok()
+                .and_then(|r| r.get("body")?.get("stackFrames")?.as_array()?.first().cloned())
+                .map(|f| json!({
+                    "file": f.get("source").and_then(|s| s.get("path")).and_then(Value::as_str).unwrap_or("?"),
+                    "line": f.get("line").and_then(Value::as_u64).unwrap_or(0),
+                    "function": f.get("name").and_then(Value::as_str).unwrap_or("?")
+                }))
+                .unwrap_or(paused_at.unwrap_or(json!(null)));
+
+            Ok(serde_json::to_string_pretty(&json!({
+                "changed": changed,
+                "variable": var_name,
+                "from": initial_value,
+                "to": final_value,
+                "steps_taken": steps,
+                "paused_at": paused_info
+            }))?)
         }
 
         _ => Err(anyhow::anyhow!("Unknown tool: {name}")),

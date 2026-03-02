@@ -147,6 +147,10 @@ remove_watch(expression)
 |----------|------|
 | Where am I? | `get_debug_context` |
 | What changed since last stop? | `get_timeline` (changed_vars field) |
+| What changed between stop 3 and stop 7? | `compare_snapshots(3, 7)` |
+| When did variable X first change? | `find_first_change("x")` |
+| What are locals in every frame? | `get_call_tree(max_depth=5)` |
+| Step until variable X changes? | `step_until_change("x")` |
 | When did variable X go wrong? | `get_variable_history("x")` |
 | Did the program print Y? | `wait_for_output("Y", from_line=N)` |
 | What did I already annotate? | `get_annotations` |
@@ -209,4 +213,8 @@ add_watch / remove_watch / get_watches
 get_debug_context                 (locals + stack + source window in one call)
 step_until(condition, max_steps)
 run_until_exception
+compare_snapshots(stop_a, stop_b) (diff variable snapshots between two timeline stops)
+find_first_change(variable_name, expected_value?)  (first stop where variable changed)
+get_call_tree(max_depth=5)        (stack + locals for each frame in one call)
+step_until_change(variable_name, max_steps=20)     (step until variable value changes)
 ```
