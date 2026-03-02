@@ -963,7 +963,16 @@ header {
 }
 
 .session-dot.dot-ended {
-    background: var(--accent-red);
+    background: var(--text-dim);
+    opacity: 0.5;
+}
+
+/* ─── Ended session: dim the sidebar entry ──────────── */
+li.session-ended {
+    opacity: 0.55;
+}
+li.session-ended .session-item {
+    font-style: italic;
 }
 
 /* ─── Session flash on new DAP event ────────────────── */
