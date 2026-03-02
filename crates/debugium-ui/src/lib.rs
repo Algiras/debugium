@@ -569,23 +569,26 @@ pub fn App() -> impl IntoView {
                 }
 
                 // onclose: mark disconnected, remove sender, schedule reconnect with backoff
+                // (but skip reconnect if the session has ended — process exited normally)
                 {
                     let ws_connected_close = ws_connected.clone();
                     let ws_senders_close = ws_senders.clone();
+                    let session_data_close = session_data.clone();
                     let id_close = id.clone();
                     let onclose = Closure::wrap(Box::new(move |_: JsValue| {
                         ws_connected_close.update(|m| { m.insert(id_close.clone(), false); });
                         let ws_senders_retry = ws_senders_close.clone();
+                        let session_data_retry = session_data_close.clone();
                         let id_retry = id_close.clone();
                         leptos::task::spawn_local(async move {
-                            // Start at 1s backoff; this closure fires once per close event.
-                            // Actual progressive backoff would require tracking attempt count
-                            // across retries, but a fixed 1s retry is sufficient here because
-                            // the Effect re-schedules on every close.
                             gloo_timers::future::sleep(std::time::Duration::from_millis(1000)).await;
-                            // Remove stale sender so the Effect re-opens WS on reconnect_tick
-                            ws_senders_retry.update(|m| { m.remove(&id_retry); });
-                            reconnect_tick.update(|n| *n = n.wrapping_add(1));
+                            // Don't reconnect if the session ended normally
+                            let is_ended = session_data_retry.get_untracked()
+                                .get(&id_retry).map(|s| s.status == "ended").unwrap_or(false);
+                            if !is_ended {
+                                ws_senders_retry.update(|m| { m.remove(&id_retry); });
+                                reconnect_tick.update(|n| *n = n.wrapping_add(1));
+                            }
                         });
                     }) as Box<dyn Fn(JsValue)>);
                     ws.set_onclose(Some(onclose.as_ref().unchecked_ref()));
@@ -719,7 +722,7 @@ pub fn App() -> impl IntoView {
                     class:collapsed=move || lc.get() || !multi_session()
                     style=move || format!("width: {}px", lw.get())
                 >
-                    <SessionsPanel sessions=sessions session_metas=session_metas active=active_session />
+                    <SessionsPanel sessions=sessions session_metas=session_metas active=active_session session_data=session_data.read_only() />
                 </aside>
 
                 // ── Left resize handle ──
@@ -1272,24 +1275,9 @@ fn handle_envelope(
     if let Some(new_sid) = post_switch_to_session {
         active_session.set(Some(new_sid));
     }
-    // Remove ended session after a brief delay (let final events flush first)
-    if post_session_ended {
-        let sessions_rm = sessions.clone();
-        let data_rm = data.clone();
-        let active_rm = active_session.clone();
-        let id_rm = id.clone();
-        leptos::task::spawn_local(async move {
-            gloo_timers::future::sleep(std::time::Duration::from_millis(2000)).await;
-            // Switch active session to another if this was active
-            let remaining: Vec<String> = sessions_rm.get_untracked()
-                .into_iter().filter(|s| s != &id_rm).collect();
-            if active_rm.get_untracked().as_deref() == Some(&id_rm) {
-                active_rm.set(remaining.first().cloned());
-            }
-            sessions_rm.update(|s| s.retain(|x| x != &id_rm));
-            data_rm.update(|m| { m.remove(&id_rm); });
-        });
-    }
+    // Session ended: keep it in the sidebar so the user can see the final state.
+    // The status is already "ended" which drives the gray dot and dimmed styling.
+    let _ = post_session_ended;
 }
 
 fn push_log(state: &mut SessionState, tag: &str, msg: &str, class: &str) {
@@ -1537,6 +1525,7 @@ fn SessionsPanel(
     sessions: RwSignal<Vec<String>>,
     session_metas: RwSignal<std::collections::HashMap<String, Value>>,
     active: RwSignal<Option<String>>,
+    session_data: ReadSignal<std::collections::HashMap<String, SessionState>>,
 ) -> impl IntoView {
     view! {
         <aside class="sidebar sidebar-left">
@@ -1565,10 +1554,14 @@ fn SessionsPanel(
                                 move |id: String| {
                                     let id_click = id.clone();
                                     let id_check = id.clone();
+                                    let id_ended = id.clone();
                                     let id_meta = id.clone();
                                     let metas = session_metas.clone();
                                     let metas2 = session_metas.clone();
                                     let id_meta2 = id.clone();
+                                    let is_ended = Signal::derive(move || {
+                                        session_data.get().get(&id_ended).map(|s| s.status == "ended").unwrap_or(false)
+                                    });
                                     let adapter_label = Signal::derive(move || {
                                         metas2.get()
                                             .get(&id_meta2)
@@ -1587,6 +1580,7 @@ fn SessionsPanel(
                                     view! {
                                         <li
                                             class:active-item=move || active.get().as_deref() == Some(&id_check)
+                                            class:session-ended=move || is_ended.get()
                                             class:session-flash={
                                                 let id_flash = id.clone();
                                                 move || {
@@ -1599,7 +1593,7 @@ fn SessionsPanel(
                                         >
                                             <span class="session-item">
                                                 {id.clone()}
-                                                <SessionDot session_id=id.clone() />
+                                                <SessionDot session_id=id.clone() session_ended=is_ended />
                                             </span>
                                             <Show when=move || program_label.get().is_some()>
                                                 <div class="session-details">
@@ -1626,7 +1620,7 @@ fn SessionsPanel(
 
 /// Small dot next to session name that reflects live status and WS connectivity.
 #[component]
-fn SessionDot(session_id: String) -> impl IntoView {
+fn SessionDot(session_id: String, session_ended: Signal<bool>) -> impl IntoView {
     let cmd_ctx = use_context::<CommandInFlight>().expect("no CommandInFlight");
     let cmd = cmd_ctx.0;
     let ws_conn_ctx = use_context::<WsConnected>().expect("no WsConnected");
@@ -1634,9 +1628,11 @@ fn SessionDot(session_id: String) -> impl IntoView {
     let id = session_id.clone();
 
     let dot_class = move || {
+        if session_ended.get() {
+            return "session-dot dot-ended";
+        }
         let is_connected = ws_connected.get().get(&id).copied().unwrap_or(false);
         if !is_connected {
-            // Yellow/orange pulsing = disconnected
             "session-dot dot-disconnected"
         } else {
             let inflight = cmd.get().as_ref().map(|(s, _)| s.as_str() == id.as_str()).unwrap_or(false);
@@ -1645,6 +1641,7 @@ fn SessionDot(session_id: String) -> impl IntoView {
     };
 
     let dot_title = move || {
+        if session_ended.get() { return "Session ended"; }
         let is_connected = ws_connected.get().get(&session_id).copied().unwrap_or(false);
         if is_connected { "Connected" } else { "Disconnected / Reconnecting…" }
     };
