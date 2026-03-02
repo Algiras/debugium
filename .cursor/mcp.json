@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "debugium": {
+      "command": "debugium",
+      "args": ["mcp"],
+      "description": "Debugium MCP bridge for live debugging. Start a session first with `debugium launch ...`."
+    }
+  }
+}

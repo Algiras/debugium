@@ -92,6 +92,10 @@ pub struct SessionState {
     pub last_llm_query: String,
     /// per-session layout state (saved when switching away, restored when switching back)
     pub saved_layout: SavedLayoutState,
+    /// most recently inspected variable reference (for visual emphasis)
+    pub last_inspected_var_ref: Option<u64>,
+    /// most recently verified breakpoint from adapter
+    pub recent_verified_breakpoint: Option<(String, u32)>,
 }
 
 /// Snapshot of per-session layout fields (saved/restored on session switch).
@@ -164,6 +168,10 @@ pub struct LastCompleted(pub RwSignal<Option<&'static str>>);
 #[derive(Clone)]
 pub struct LastEventSession(pub RwSignal<Option<String>>);
 
+/// Global UI error message (toast)
+#[derive(Clone)]
+pub struct GlobalError(pub RwSignal<Option<String>>);
+
 /// Left/right sidebar collapsed state.
 #[derive(Clone)]
 pub struct LayoutState {
@@ -182,6 +190,8 @@ pub struct LayoutState {
     pub bps_collapsed: RwSignal<bool>,
     /// dark mode toggle
     pub dark_mode: RwSignal<bool>,
+    /// overall UI density preset: slim | standard | full
+    pub layout_preset: RwSignal<String>,
     /// variable name filter text
     pub var_filter: RwSignal<String>,
 }
@@ -250,7 +260,10 @@ pub fn App() -> impl IntoView {
     let cmd_in_flight: RwSignal<Option<(String, &'static str)>> = RwSignal::new(None);
     let last_completed: RwSignal<Option<&'static str>> = RwSignal::new(None);
     let last_event_session: RwSignal<Option<String>> = RwSignal::new(None);
+    let global_error: RwSignal<Option<String>> = RwSignal::new(None);
     let reconnect_tick: RwSignal<u32> = RwSignal::new(0);
+    let onboarding_dismissed: RwSignal<bool> = RwSignal::new(false);
+    let show_launch_modal: RwSignal<bool> = RwSignal::new(false);
     let layout = LayoutState {
         left_collapsed: RwSignal::new(false),
         right_collapsed: RwSignal::new(false),
@@ -270,6 +283,14 @@ pub fn App() -> impl IntoView {
                 .map(|v| v == "true")
                 .unwrap_or(false)
         }),
+        layout_preset: RwSignal::new({
+            let saved = read_window_storage("debugium.layout_preset")
+                .unwrap_or_else(|| "standard".to_string());
+            match saved.as_str() {
+                "slim" | "standard" | "full" => saved,
+                _ => "standard".to_string(),
+            }
+        }),
         var_filter: RwSignal::new(String::new()),
     };
 
@@ -278,7 +299,34 @@ pub fn App() -> impl IntoView {
     provide_context(CommandInFlight(cmd_in_flight));
     provide_context(LastCompleted(last_completed));
     provide_context(LastEventSession(last_event_session));
+    provide_context(GlobalError(global_error));
     provide_context(layout.clone());
+
+    // Auto-clear global UI error toast after a short delay.
+    {
+        let ge = global_error;
+        Effect::new(move |_| {
+            if ge.get().is_some() {
+                let ge_clear = ge;
+                leptos::task::spawn_local(async move {
+                    gloo_timers::future::sleep(std::time::Duration::from_millis(4500)).await;
+                    ge_clear.set(None);
+                });
+            }
+        });
+    }
+
+    // Persist onboarding dismissal across reloads.
+    if let Some(saved) = read_window_storage("debugium.onboarding.dismissed") {
+        onboarding_dismissed.set(saved == "1");
+    }
+    {
+        let onboarding_dismissed_save = onboarding_dismissed;
+        Effect::new(move |_| {
+            let val = if onboarding_dismissed_save.get() { "1" } else { "0" };
+            write_window_storage("debugium.onboarding.dismissed", val);
+        });
+    }
 
     // ── Save/restore per-session layout state on session switch ──
     {
@@ -323,6 +371,32 @@ pub fn App() -> impl IntoView {
     }
 
     let host = web_sys::window().unwrap().location().host().unwrap();
+
+    // Keep narrow_mode in sync with viewport width for split-screen setups.
+    {
+        let nm_r = layout.narrow_mode;
+        let lw_r = layout.left_width;
+        let rw_r = layout.right_width;
+        let apply_responsive = move || {
+            let Some(win) = web_sys::window() else { return; };
+            let Ok(width) = win.inner_width() else { return; };
+            let Some(width_px) = width.as_f64() else { return; };
+            let narrow = width_px <= 960.0;
+            nm_r.set(narrow);
+            if narrow {
+                lw_r.update(|v| *v = (*v).clamp(140, 180));
+                rw_r.update(|v| *v = (*v).clamp(170, 220));
+            }
+        };
+        apply_responsive();
+        let on_resize = Closure::wrap(Box::new(move |_e: web_sys::Event| {
+            apply_responsive();
+        }) as Box<dyn FnMut(_)>);
+        if let Some(win) = web_sys::window() {
+            let _ = win.add_event_listener_with_callback("resize", on_resize.as_ref().unchecked_ref());
+        }
+        on_resize.forget();
+    }
 
     // ── Poll /sessions continuously ───────────────────
     leptos::task::spawn_local(async move {
@@ -574,9 +648,11 @@ pub fn App() -> impl IntoView {
                     let ws_connected_close = ws_connected.clone();
                     let ws_senders_close = ws_senders.clone();
                     let session_data_close = session_data.clone();
+                    let global_error_close = global_error.clone();
                     let id_close = id.clone();
                     let onclose = Closure::wrap(Box::new(move |_: JsValue| {
                         ws_connected_close.update(|m| { m.insert(id_close.clone(), false); });
+                        global_error_close.set(Some(format!("Session '{id_close}' disconnected, retrying...")));
                         let ws_senders_retry = ws_senders_close.clone();
                         let session_data_retry = session_data_close.clone();
                         let id_retry = id_close.clone();
@@ -613,6 +689,7 @@ pub fn App() -> impl IntoView {
                     let sessions = sessions.clone();
                     let active_session = active_session.clone();
                     let session_data = session_data.clone();
+                    let global_error_msg = global_error.clone();
                     let cmd_in_flight = cmd_in_flight.clone();
                     let last_event_session = last_event_session.clone();
                     let ws_senders_msg = ws_senders.clone();
@@ -631,7 +708,19 @@ pub fn App() -> impl IntoView {
                                         if v.as_deref() == Some(&sid) { *v = None; }
                                     });
                                 });
-                                handle_envelope(env, &sessions, &active_session, &session_data, &cmd_in_flight, &ws_senders_msg, &layout_msg.watches, &layout_msg.console_collapsed);
+                                handle_envelope(
+                                    env,
+                                    &sessions,
+                                    &active_session,
+                                    &session_data,
+                                    &cmd_in_flight,
+                                    &ws_senders_msg,
+                                    &layout_msg.watches,
+                                    &layout_msg.console_collapsed,
+                                    &global_error_msg,
+                                );
+                            } else {
+                                global_error_msg.set(Some("Failed to parse websocket message.".to_string()));
                             }
                         }
                     }
@@ -647,6 +736,23 @@ pub fn App() -> impl IntoView {
     let nm = layout.narrow_mode;
     let lw = layout.left_width;
     let rw = layout.right_width;
+    let preset = layout.layout_preset;
+    let left_width_px = move || {
+        let base = if nm.get() { lw.get().clamp(140, 180) } else { lw.get() };
+        match preset.get().as_str() {
+            "slim" => base.clamp(140, 190),
+            "full" if !nm.get() => base.max(220).min(360),
+            _ => base,
+        }
+    };
+    let right_width_px = move || {
+        let base = if nm.get() { rw.get().clamp(170, 220) } else { rw.get() };
+        match preset.get().as_str() {
+            "slim" => base.clamp(170, 230),
+            "full" if !nm.get() => base.max(300).min(480),
+            _ => base,
+        }
+    };
 
     // ── Dark mode: apply/remove light-mode class on <html> ────────
     {
@@ -666,6 +772,57 @@ pub fn App() -> impl IntoView {
             {
                 let _ = storage.set_item("debugium_dark_mode", if light { "true" } else { "false" });
             }
+        });
+    }
+
+    // ── Layout preset: persist + apply coarse layout behavior ───────
+    {
+        let preset = layout.layout_preset;
+        let console_collapsed = layout.console_collapsed;
+        let left_width = layout.left_width;
+        let right_width = layout.right_width;
+        let prev_preset: RwSignal<String> = RwSignal::new(String::new());
+        Effect::new(move |_| {
+            let next = preset.get();
+            if prev_preset.get_untracked() == next {
+                return;
+            }
+            write_window_storage("debugium.layout_preset", &next);
+            let vars_collapsed = layout.vars_collapsed;
+            let bps_collapsed = layout.bps_collapsed;
+            let left_collapsed = layout.left_collapsed;
+            let right_collapsed = layout.right_collapsed;
+            match next.as_str() {
+                "slim" => {
+                    // Close everything: max source area
+                    console_collapsed.set(true);
+                    vars_collapsed.set(true);
+                    bps_collapsed.set(true);
+                    left_collapsed.set(true);
+                    right_collapsed.set(true);
+                }
+                "full" => {
+                    // Show everything
+                    console_collapsed.set(false);
+                    vars_collapsed.set(false);
+                    bps_collapsed.set(false);
+                    left_collapsed.set(false);
+                    right_collapsed.set(false);
+                    left_width.update(|v| *v = (*v).max(220).min(360));
+                    right_width.update(|v| *v = (*v).max(300).min(480));
+                }
+                _ => {
+                    // Standard: console collapsed, panels open
+                    console_collapsed.set(true);
+                    vars_collapsed.set(false);
+                    bps_collapsed.set(false);
+                    left_collapsed.set(false);
+                    right_collapsed.set(false);
+                    left_width.update(|v| *v = (*v).clamp(180, 260));
+                    right_width.update(|v| *v = (*v).clamp(240, 340));
+                }
+            }
+            prev_preset.set(next);
         });
     }
 
@@ -705,9 +862,25 @@ pub fn App() -> impl IntoView {
     let multi_session = move || sessions.get().len() > 1;
 
     view! {
-        <div id="app" class:narrow-mode=move || nm.get()>
+        <div
+            id="app"
+            class:narrow-mode=move || nm.get()
+            class:layout-slim=move || layout.layout_preset.get() == "slim"
+            class:layout-full=move || layout.layout_preset.get() == "full"
+        >
             <Header active_session=active_session session_data=session_data.read_only() />
             <ProcessInfoBar active_session=active_session.read_only() session_metas=session_metas.read_only() />
+            <GettingStartedCard
+                sessions=sessions.read_only()
+                onboarding_dismissed=onboarding_dismissed
+                show_launch_modal=show_launch_modal
+            />
+            <LaunchSessionModal
+                show=show_launch_modal
+                sessions=sessions
+                active_session=active_session
+                session_metas=session_metas
+            />
             <div class="dashboard-wrapper">
 
                 // Expand rail for collapsed left sidebar
@@ -720,14 +893,23 @@ pub fn App() -> impl IntoView {
                 <aside
                     class="sidebar sidebar-left"
                     class:collapsed=move || lc.get() || !multi_session()
-                    style=move || format!("width: {}px", lw.get())
+                    style=move || format!("width: {}px", left_width_px())
                 >
-                    <SessionsPanel sessions=sessions session_metas=session_metas active=active_session session_data=session_data.read_only() />
+                    <SessionsPanel
+                        sessions=sessions
+                        session_metas=session_metas
+                        active=active_session
+                        session_data=session_data.read_only()
+                        show_launch_modal=show_launch_modal
+                    />
                 </aside>
 
                 // ── Left resize handle ──
-                <Show when=move || !lc.get()>
+                <Show when=move || !lc.get() && !nm.get()>
                     <ResizeHandle width=lw min_w=120 max_w=400 invert=false />
+                </Show>
+                <Show when=move || !lc.get() && nm.get()>
+                    <ResizeHandle width=lw min_w=140 max_w=180 invert=false />
                 </Show>
 
                 <main class="center-content">
@@ -737,14 +919,17 @@ pub fn App() -> impl IntoView {
                 </main>
 
                 // ── Right resize handle ──
-                <Show when=move || !rc.get()>
+                <Show when=move || !rc.get() && !nm.get()>
                     <ResizeHandle width=rw min_w=160 max_w=480 invert=true />
+                </Show>
+                <Show when=move || !rc.get() && nm.get()>
+                    <ResizeHandle width=rw min_w=170 max_w=220 invert=true />
                 </Show>
 
                 <aside
                     class="sidebar sidebar-right"
                     class:collapsed=move || rc.get()
-                    style=move || format!("width: {}px", rw.get())
+                    style=move || format!("width: {}px", right_width_px())
                 >
                     <StackPanel session_data=session_data active_session=active_session.read_only() />
                     <VariablesPanel session_data=session_data active_session=active_session.read_only() />
@@ -761,6 +946,7 @@ pub fn App() -> impl IntoView {
                 </Show>
 
             </div>
+            <GlobalErrorToast />
             // ── Status bar ──
             <div class="status-bar">
                 <span>{move || active_session.get().unwrap_or_else(|| "No session".into())}</span>
@@ -816,6 +1002,7 @@ fn handle_envelope(
     ws_senders: &RwSignal<std::collections::HashMap<String, js_sys::Function>>,
     watches: &RwSignal<Vec<String>>,
     console_collapsed: &RwSignal<bool>,
+    global_error: &RwSignal<Option<String>>,
 ) {
     // Will be set if we need to send a follow-up DAP command after the update
     // (can't borrow data mutably twice in the same closure)
@@ -1075,7 +1262,13 @@ fn handle_envelope(
             },
             "response" => {
                 let ok = msg.get("success").and_then(Value::as_bool).unwrap_or(false);
-                if !ok { return; }
+                if !ok {
+                    let cmd = msg.get("command").and_then(Value::as_str).unwrap_or("unknown");
+                    let err = msg.get("message").and_then(Value::as_str).unwrap_or("command failed");
+                    global_error.set(Some(format!("{cmd}: {err}")));
+                    push_log(state, "✗", &format!("{cmd} failed: {err}"), "log-error");
+                    return;
+                }
                 let cmd = msg.get("command").and_then(Value::as_str).unwrap_or("");
 
                 if cmd == "threads" {
@@ -1142,6 +1335,7 @@ fn handle_envelope(
 
                         if let Some(ref_id) = state.pending_var_ref.take() {
                             // This is a manual expansion response — store as children
+                            state.last_inspected_var_ref = Some(ref_id);
                             state.expanded_vars.insert(ref_id, new_vars);
                         } else if let Some(scope_ref) = state.pending_scope_var_ref.take() {
                             // This is a scope auto-expand response — update flat variable list
@@ -1194,7 +1388,10 @@ fn handle_envelope(
                                         .unwrap_or(BreakpointSpec { line, ..Default::default() })
                                 })
                                 .collect();
-                            state.breakpoints.insert(file, specs);
+                            state.breakpoints.insert(file.clone(), specs);
+                            if let Some(first_verified) = verified_lines.first().copied() {
+                                state.recent_verified_breakpoint = Some((file, first_verified));
+                            }
                             // Push verified lines back into the editor gutter
                             if let Ok(json) = serde_json::to_string(&verified_lines) {
                                 editor::set_breakpoints(&json);
@@ -1423,88 +1620,112 @@ fn Header(
                         {move || in_flight_label().unwrap_or("")}
                     </div>
                 </Show>
+                <Show when=move || active_session.get().is_none()>
+                    <div class="onboarding-inline-hint">
+                        <span class="onboarding-hint-title">"No active session."</span>
+                        <span>" Run "</span>
+                        <code>"debugium launch app.py --adapter python --breakpoint /abs/path/app.py:42"</code>
+                    </div>
+                </Show>
             </div>
-            <div class="header-controls">
-                <button
-                    class=move || format!("btn-continue {}", btn_class("Continue"))
-                    title="Continue (F5)"
-                    disabled=move || !is_paused() || cmd_signal.get().is_some()
-                    on:click=move |_| do_cmd("continue", "Continue")
-                >
-                    <span class="btn-icon">"▶"</span>" Continue"
-                </button>
-                <button
-                    class=move || format!("btn-step {}", btn_class("Pause"))
-                    disabled=move || !is_running() || cmd_signal.get().is_some()
-                    on:click=move |_| do_cmd("pause", "Pause")
-                >
-                    <span class="btn-icon">"⏸"</span>" Pause"
-                </button>
-                <button
-                    class=move || format!("btn-step {}", btn_class("Step In"))
-                    title="Step Into (F11)"
-                    disabled=move || !is_paused() || cmd_signal.get().is_some()
-                    on:click=move |_| do_cmd("stepIn", "Step In")
-                >
-                    <span class="btn-icon">"↓"</span>" Step In"
-                </button>
-                <button
-                    class=move || format!("btn-over {}", btn_class("Step Over"))
-                    title="Step Over (F10)"
-                    disabled=move || !is_paused() || cmd_signal.get().is_some()
-                    on:click=move |_| do_cmd("next", "Step Over")
-                >
-                    <span class="btn-icon">"↷"</span>" Step Over"
-                </button>
-                <button
-                    class=move || btn_class("Step Out")
-                    title="Step Out (Shift+F11)"
-                    disabled=move || !is_paused() || cmd_signal.get().is_some()
-                    on:click=move |_| do_cmd("stepOut", "Step Out")
-                >
-                    <span class="btn-icon">"↑"</span>" Step Out"
-                </button>
-                // Separator
-                <span style="width: 1px; height: 18px; background: var(--border); margin: 0 6px; display: inline-block; opacity: .5"></span>
-                // Stop session
-                <button
-                    class="debug-btn btn-stop"
-                    title="Stop session (terminate)"
-                    disabled=move || active_session.get().is_none()
-                    on:click={
-                        let ws_s = ws_senders.clone();
-                        let act = active_session.clone();
-                        move |_| {
-                            let id = act.get_untracked().unwrap_or_else(|| "default".into());
-                            send_cmd(&ws_s, &id, "terminate", serde_json::json!({}));
+            <div class="header-center">
+                <div class="header-controls">
+                    <button
+                        class=move || format!("btn-continue icon-only {}", btn_class("Continue"))
+                        title="Continue (F5)"
+                        disabled=move || !is_paused() || cmd_signal.get().is_some()
+                        on:click=move |_| do_cmd("continue", "Continue")
+                    >
+                        <span class="btn-icon">"▶"</span>
+                    </button>
+                    <button
+                        class=move || format!("btn-step icon-only {}", btn_class("Pause"))
+                        title="Pause"
+                        disabled=move || !is_running() || cmd_signal.get().is_some()
+                        on:click=move |_| do_cmd("pause", "Pause")
+                    >
+                        <span class="btn-icon">"⏸"</span>
+                    </button>
+                    <button
+                        class=move || format!("btn-step icon-only {}", btn_class("Step In"))
+                        title="Step Into (F11)"
+                        disabled=move || !is_paused() || cmd_signal.get().is_some()
+                        on:click=move |_| do_cmd("stepIn", "Step In")
+                    >
+                        <span class="btn-icon">"↓"</span>
+                    </button>
+                    <button
+                        class=move || format!("btn-over icon-only {}", btn_class("Step Over"))
+                        title="Step Over (F10)"
+                        disabled=move || !is_paused() || cmd_signal.get().is_some()
+                        on:click=move |_| do_cmd("next", "Step Over")
+                    >
+                        <span class="btn-icon">"↷"</span>
+                    </button>
+                    <button
+                        class=move || format!("icon-only {}", btn_class("Step Out"))
+                        title="Step Out (Shift+F11)"
+                        disabled=move || !is_paused() || cmd_signal.get().is_some()
+                        on:click=move |_| do_cmd("stepOut", "Step Out")
+                    >
+                        <span class="btn-icon">"↑"</span>
+                    </button>
+                    // Separator
+                    <span style="width: 1px; height: 16px; background: var(--border); margin: 0 4px; display: inline-block; opacity: .5"></span>
+                    // Restart session
+                    <button
+                        class="debug-btn btn-restart icon-only"
+                        title="Restart session"
+                        disabled=move || active_session.get().is_none()
+                        on:click={
+                            let ws_s2 = ws_senders.clone();
+                            let act2 = active_session.clone();
+                            move |_| {
+                                let id = act2.get_untracked().unwrap_or_else(|| "default".into());
+                                send_cmd(&ws_s2, &id, "restart", serde_json::json!({}));
+                            }
                         }
-                    }
-                >
-                    <span class="btn-icon">"■"</span>" Stop"
-                </button>
-                // Restart session
-                <button
-                    class="debug-btn btn-restart"
-                    title="Restart session"
-                    disabled=move || active_session.get().is_none()
-                    on:click={
-                        let ws_s2 = ws_senders.clone();
-                        let act2 = active_session.clone();
-                        move |_| {
-                            let id = act2.get_untracked().unwrap_or_else(|| "default".into());
-                            send_cmd(&ws_s2, &id, "restart", serde_json::json!({}));
+                    >
+                        <span class="btn-icon">"↺"</span>
+                    </button>
+                    // Stop session
+                    <button
+                        class="debug-btn btn-stop icon-only"
+                        title="Stop session (terminate)"
+                        disabled=move || active_session.get().is_none()
+                        on:click={
+                            let ws_s = ws_senders.clone();
+                            let act = active_session.clone();
+                            move |_| {
+                                let id = act.get_untracked().unwrap_or_else(|| "default".into());
+                                send_cmd(&ws_s, &id, "terminate", serde_json::json!({}));
+                            }
                         }
-                    }
-                >
-                    <span class="btn-icon">"↺"</span>" Restart"
-                </button>
-                // Toggle console collapsed
-                <button
-                    class="debug-btn btn-theme"
-                    style="margin-left: 8px; font-size: 11px;"
-                    title="Toggle Debug Console"
-                    on:click=move |_| layout.console_collapsed.update(|v| *v = !*v)
-                >{move || if layout.console_collapsed.get() { "Console ▸" } else { "Console ▾" }}</button>
+                    >
+                        <span class="btn-icon">"■"</span>
+                    </button>
+                </div>
+            </div>
+            
+            <div class="header-right">
+                // Layout preset
+                <div class="layout-preset-group" role="group" aria-label="Layout preset">
+                    <button
+                        class=move || if layout.layout_preset.get() == "slim" { "layout-preset-btn is-active" } else { "layout-preset-btn" }
+                        on:click=move |_| layout.layout_preset.set("slim".to_string())
+                        title="Slim: close all panels, maximise source"
+                    >"Slim"</button>
+                    <button
+                        class=move || if layout.layout_preset.get() == "standard" { "layout-preset-btn is-active" } else { "layout-preset-btn" }
+                        on:click=move |_| layout.layout_preset.set("standard".to_string())
+                        title="Standard: console collapsed, panels open"
+                    >"Std"</button>
+                    <button
+                        class=move || if layout.layout_preset.get() == "full" { "layout-preset-btn is-active" } else { "layout-preset-btn" }
+                        on:click=move |_| layout.layout_preset.set("full".to_string())
+                        title="Full: show everything"
+                    >"Full"</button>
+                </div>
                 // Dark mode toggle
                 <button
                     class="debug-btn btn-theme"
@@ -1526,6 +1747,7 @@ fn SessionsPanel(
     session_metas: RwSignal<std::collections::HashMap<String, Value>>,
     active: RwSignal<Option<String>>,
     session_data: ReadSignal<std::collections::HashMap<String, SessionState>>,
+    show_launch_modal: RwSignal<bool>,
 ) -> impl IntoView {
     view! {
         <aside class="sidebar sidebar-left">
@@ -1535,11 +1757,18 @@ fn SessionsPanel(
                     {
                         let layout_sp = use_context::<LayoutState>().expect("no LayoutState");
                         view! {
-                            <button
-                                class="collapse-btn"
-                                title="Collapse sessions sidebar"
-                                on:click=move |_| layout_sp.left_collapsed.update(|v| *v = !*v)
-                            >{move || if layout_sp.left_collapsed.get() { "▶" } else { "◀" }}</button>
+                            <div class="panel-header-actions">
+                                <button
+                                    class="launch-inline-btn"
+                                    title="Launch a new debug session"
+                                    on:click=move |_| show_launch_modal.set(true)
+                                >"+ Launch"</button>
+                                <button
+                                    class="collapse-btn"
+                                    title="Collapse sessions sidebar"
+                                    on:click=move |_| layout_sp.left_collapsed.update(|v| *v = !*v)
+                                >{move || if layout_sp.left_collapsed.get() { "▶" } else { "◀" }}</button>
+                            </div>
                         }
                     }
                 </div>
@@ -1872,8 +2101,25 @@ fn SourcePanel(
             .unwrap_or_default()
     };
 
+    let show_source_onboarding = move || {
+        match active_session.get() {
+            None => true,
+            Some(id) => session_data
+                .get()
+                .get(&id)
+                .and_then(|s| s.source_path.as_ref())
+                .is_none(),
+        }
+    };
+    let source_read_highlight = move || {
+        active_session.get()
+            .and_then(|id| data.get().get(&id).cloned())
+            .map(|s| s.last_llm_query.contains("get_source"))
+            .unwrap_or(false)
+    };
+
     view! {
-        <div class="panel source-panel">
+        <div class="panel source-panel" class:mcp-source-reading=source_read_highlight>
             <div class="panel-header">
                 <h2>"Source"</h2>
                 <span
@@ -1979,7 +2225,19 @@ fn SourcePanel(
                     <span class="tab-empty">"No files open"</span>
                 </Show>
             </div>
-            <div class="panel-content" node_ref=container_ref id="code-view-container"></div>
+            <div class="panel-content source-panel-content">
+                <div node_ref=container_ref id="code-view-container"></div>
+                <Show when=show_source_onboarding>
+                    <div class="onboarding-overlay">
+                        <h3>"Start a debug session"</h3>
+                        <p>"Launch from terminal, then use the toolbar or F-keys to step."</p>
+                        <div class="onboarding-cmd-list">
+                            <code>"debugium launch app.py --adapter python --breakpoint /abs/path/app.py:42"</code>
+                            <code>"debugium launch app.js --adapter node --breakpoint /abs/path/app.js:15"</code>
+                        </div>
+                    </div>
+                </Show>
+            </div>
         </div>
     }
 }
@@ -2021,11 +2279,20 @@ fn StackPanel(
     let header_class = move || {
         if event_seq() > 0 { "panel-header panel-updating" } else { "panel-header" }
     };
+    let stack_loading = move || {
+        active_session.get()
+            .and_then(|id| session_data.get().get(&id).cloned())
+            .map(|s| s.status == "paused" && s.stack_frames.is_empty())
+            .unwrap_or(false)
+    };
 
     view! {
-        <div class="panel" style="flex:1;overflow:hidden;border-bottom:1px solid var(--border)">
+        <div class="panel" class:panel-loading=stack_loading style="flex:1;overflow:hidden;border-bottom:1px solid var(--border)">
             <div class=header_class>
                 <h2>"Threads & Stack"</h2>
+                <Show when=stack_loading>
+                    <span class="panel-chip">"loading"</span>
+                </Show>
                 <button
                     class="collapse-btn"
                     title="Collapse right panel"
@@ -2088,7 +2355,15 @@ fn StackPanel(
                         }
                     />
                     <Show when=move || frames().is_empty()>
-                        <li class="empty-state">"No threads"</li>
+                        <li class="empty-state onboarding-empty-state">
+                            {move || {
+                                if active_session.get().is_none() {
+                                    "No session yet — launch one to load threads and stack frames.".to_string()
+                                } else {
+                                    "No stack yet — pause execution or hit a breakpoint.".to_string()
+                                }
+                            }}
+                        </li>
                     </Show>
                 </ul>
             </div>
@@ -2131,11 +2406,24 @@ fn VariablesPanel(
     };
 
     let var_filter = layout.var_filter;
+    let var_pending_ref = move || {
+        active_session.get()
+            .and_then(|id| session_data.get().get(&id).cloned())
+            .and_then(|s| s.pending_var_ref)
+    };
+    let vars_loading = move || {
+        active_session.get()
+            .and_then(|id| session_data.get().get(&id).cloned())
+            .map(|s| s.pending_var_ref.is_some() || s.pending_scope_var_ref.is_some())
+            .unwrap_or(false)
+    };
+    let vars_count = move || vars().len();
 
     view! {
-        <div class="panel" style=move || if layout.vars_collapsed.get() { "flex: 0 0 32px; overflow: hidden;" } else { "flex: 1; min-height: 0; overflow: hidden;" }>
+        <div class="panel" class:panel-loading=vars_loading style=move || if layout.vars_collapsed.get() { "flex: 0 0 32px; overflow: hidden;" } else { "flex: 1; min-height: 0; overflow: hidden;" }>
             <div class="panel-header">
                 <h2>"Variables"</h2>
+                <span class="panel-chip">{move || vars_count().to_string()}</span>
                 <button
                     class="collapse-btn"
                     title="Toggle Variables"
@@ -2226,6 +2514,7 @@ fn VariablesPanel(
                                     <li
                                         class="var-item"
                                         class:var-changed=move || changed_vars().contains(&v_name_chk)
+                                        class:var-inspecting=move || var_pending_ref() == Some(vref)
                                     >
                                         <Show when=move || has_children>
                                             <span class="var-chevron" on:click=on_expand.clone()>
@@ -2332,7 +2621,15 @@ fn VariablesPanel(
                         }
                     />
                     <Show when=move || vars().is_empty()>
-                        <li class="empty-state">"No variables"</li>
+                        <li class="empty-state onboarding-empty-state">
+                            {move || {
+                                if active_session.get().is_none() {
+                                    "No session yet — variables appear after launch and pause.".to_string()
+                                } else {
+                                    "No variables for current frame — click a stack frame or run get_debug_context.".to_string()
+                                }
+                            }}
+                        </li>
                     </Show>
                 </ul>
             </div>
@@ -2398,6 +2695,8 @@ fn ConsolePanel(
     let ws_senders = ws.0;
 
     let eval_expr: RwSignal<String> = RwSignal::new(String::new());
+    let command_history: RwSignal<Vec<String>> = RwSignal::new(vec![]);
+    let history_index: RwSignal<Option<usize>> = RwSignal::new(None);
     let exc_uncaught: RwSignal<bool> = RwSignal::new(true);  // default on
     let show_completions: RwSignal<bool> = RwSignal::new(false);
     let selected_completion: RwSignal<usize> = RwSignal::new(0);
@@ -2425,6 +2724,13 @@ fn ConsolePanel(
         move |_| {
             let expr = eval_expr.get_untracked();
             if expr.trim().is_empty() { return; }
+            command_history.update(|h| {
+                if h.last().map(|v| v != &expr).unwrap_or(true) {
+                    h.push(expr.clone());
+                    if h.len() > 50 { h.remove(0); }
+                }
+            });
+            history_index.set(None);
             let Some(sid) = active_session.get_untracked() else { return; };
             let frame_id = session_data.get_untracked()
                 .get(&sid).and_then(|s| s.stack_frames.first().cloned())
@@ -2533,19 +2839,59 @@ fn ConsolePanel(
                                     .unchecked_into::<web_sys::HtmlInputElement>()
                                     .value();
                                 eval_expr.set(val.clone());
+                                history_index.set(None);
                                 do_comp(val);
                             }
                         }
                         on:keydown={
                             let do_ev = do_eval.clone();
+                            let hist = command_history;
+                            let hist_idx = history_index;
                             move |e| {
                                 use wasm_bindgen::JsCast;
                                 let ke = e.unchecked_ref::<web_sys::KeyboardEvent>();
                                 match ke.key().as_str() {
                                     "Enter" => { do_ev(()); show_completions.set(false); }
                                     "Escape" => show_completions.set(false),
-                                    "ArrowDown" => selected_completion.update(|n| *n = n.saturating_add(1)),
-                                    "ArrowUp" => selected_completion.update(|n| *n = n.saturating_sub(1)),
+                                    "ArrowDown" => {
+                                        if show_completions.get_untracked() {
+                                            selected_completion.update(|n| *n = n.saturating_add(1));
+                                        } else {
+                                            e.prevent_default();
+                                            let len = hist.get_untracked().len();
+                                            match hist_idx.get_untracked() {
+                                                Some(i) if i + 1 < len => {
+                                                    let ni = i + 1;
+                                                    hist_idx.set(Some(ni));
+                                                    if let Some(cmd) = hist.get_untracked().get(ni).cloned() {
+                                                        eval_expr.set(cmd);
+                                                    }
+                                                }
+                                                _ => {
+                                                    hist_idx.set(None);
+                                                    eval_expr.set(String::new());
+                                                }
+                                            }
+                                        }
+                                    }
+                                    "ArrowUp" => {
+                                        if show_completions.get_untracked() {
+                                            selected_completion.update(|n| *n = n.saturating_sub(1));
+                                        } else {
+                                            e.prevent_default();
+                                            let len = hist.get_untracked().len();
+                                            if len == 0 { return; }
+                                            let next = match hist_idx.get_untracked() {
+                                                Some(i) if i > 0 => i - 1,
+                                                Some(_) => 0,
+                                                None => len - 1,
+                                            };
+                                            hist_idx.set(Some(next));
+                                            if let Some(cmd) = hist.get_untracked().get(next).cloned() {
+                                                eval_expr.set(cmd);
+                                            }
+                                        }
+                                    }
                                     _ => {}
                                 }
                             }
@@ -2572,6 +2918,248 @@ fn ConsolePanel(
             </div>
             </Show>
         </div>
+    }
+}
+
+// ─────────────────────────────────────────────
+//  Getting started helper
+// ─────────────────────────────────────────────
+
+#[component]
+fn GettingStartedCard(
+    sessions: ReadSignal<Vec<String>>,
+    onboarding_dismissed: RwSignal<bool>,
+    show_launch_modal: RwSignal<bool>,
+) -> impl IntoView {
+    view! {
+        <Show when=move || sessions.get().is_empty() && !onboarding_dismissed.get()>
+            <div class="onboarding-card">
+                <div class="onboarding-card-header">
+                    <h3>"Getting Started"</h3>
+                    <button
+                        class="collapse-btn"
+                        title="Dismiss onboarding tips"
+                        on:click=move |_| onboarding_dismissed.set(true)
+                    >"✕"</button>
+                </div>
+                <ol class="onboarding-steps">
+                    <li>"Launch your target with a breakpoint."</li>
+                    <li><code>"debugium launch app.py --adapter python --breakpoint /abs/path/app.py:42"</code></li>
+                    <li>"Use toolbar or shortcuts: F5 continue, F10 over, F11 into."</li>
+                    <li>"For AI debugging, start from " <code>"get_debug_context"</code> " before deeper tools."</li>
+                </ol>
+                <div class="onboarding-actions">
+                    <button class="launch-primary-btn" on:click=move |_| show_launch_modal.set(true)>
+                        "Launch from UI"
+                    </button>
+                </div>
+            </div>
+        </Show>
+    }
+}
+
+#[component]
+fn LaunchSessionModal(
+    show: RwSignal<bool>,
+    sessions: RwSignal<Vec<String>>,
+    active_session: RwSignal<Option<String>>,
+    session_metas: RwSignal<std::collections::HashMap<String, Value>>,
+) -> impl IntoView {
+    let program = RwSignal::new(String::new());
+    let adapter = RwSignal::new(String::from("python"));
+    let breakpoints = RwSignal::new(String::new());
+    let session_name = RwSignal::new(String::new());
+    let submitting = RwSignal::new(false);
+    let error_msg: RwSignal<Option<String>> = RwSignal::new(None);
+
+    let close_modal = move |_| {
+        if submitting.get() {
+            return;
+        }
+        show.set(false);
+        error_msg.set(None);
+    };
+
+    let submit_launch = move |_| {
+        if submitting.get() {
+            return;
+        }
+        let program_val = program.get().trim().to_string();
+        if program_val.is_empty() {
+            error_msg.set(Some("Program path is required.".to_string()));
+            return;
+        }
+        submitting.set(true);
+        error_msg.set(None);
+
+        let adapter_val = adapter.get();
+        let breakpoints_val = parse_breakpoint_input(&breakpoints.get());
+        let session_name_val = session_name.get().trim().to_string();
+        let sessions_u = sessions;
+        let active_session_u = active_session;
+        let session_metas_u = session_metas;
+        let show_u = show;
+        let program_reset = program;
+        let breakpoints_reset = breakpoints;
+        let session_name_reset = session_name;
+        let submitting_u = submitting;
+        let error_msg_u = error_msg;
+
+        leptos::task::spawn_local(async move {
+            let mut payload = serde_json::Map::new();
+            payload.insert("program".to_string(), Value::String(program_val.clone()));
+            payload.insert("adapter".to_string(), Value::String(adapter_val.clone()));
+            if !breakpoints_val.is_empty() {
+                payload.insert(
+                    "breakpoints".to_string(),
+                    Value::Array(breakpoints_val.into_iter().map(Value::String).collect()),
+                );
+            }
+            if !session_name_val.is_empty() {
+                payload.insert("session_id".to_string(), Value::String(session_name_val.clone()));
+            }
+
+            let response = match gloo_net::http::Request::post("/sessions").json(&payload) {
+                Ok(req) => req.send().await,
+                Err(e) => {
+                    error_msg_u.set(Some(format!("Failed to encode request: {e}")));
+                    submitting_u.set(false);
+                    return;
+                }
+            };
+
+            match response {
+                Ok(resp) if resp.ok() => {
+                    match resp.json::<Value>().await {
+                        Ok(body) => {
+                            let sid = body
+                                .get("session_id")
+                                .and_then(Value::as_str)
+                                .unwrap_or("default")
+                                .to_string();
+                            sessions_u.update(|s| {
+                                if !s.contains(&sid) {
+                                    s.push(sid.clone());
+                                }
+                            });
+                            session_metas_u.update(|m| {
+                                m.insert(
+                                    sid.clone(),
+                                    serde_json::json!({ "id": sid, "program": program_val, "adapter": adapter_val }),
+                                );
+                            });
+                            active_session_u.set(Some(sid));
+                            program_reset.set(String::new());
+                            breakpoints_reset.set(String::new());
+                            session_name_reset.set(String::new());
+                            show_u.set(false);
+                        }
+                        Err(e) => error_msg_u.set(Some(format!("Invalid launch response: {e}"))),
+                    }
+                }
+                Ok(resp) => {
+                    let status = resp.status();
+                    let text = resp.text().await.unwrap_or_else(|_| "Unknown launch error".to_string());
+                    let parsed_msg = serde_json::from_str::<Value>(&text)
+                        .ok()
+                        .and_then(|v| v.get("error").and_then(Value::as_str).map(str::to_string))
+                        .unwrap_or(text);
+                    error_msg_u.set(Some(format!("Launch failed ({status}): {parsed_msg}")));
+                }
+                Err(e) => error_msg_u.set(Some(format!("Network error while launching: {e}"))),
+            }
+            submitting_u.set(false);
+        });
+    };
+
+    view! {
+        <Show when=move || show.get()>
+            <div class="modal-backdrop" on:click=close_modal>
+                <div class="launch-modal" on:click=move |ev| ev.stop_propagation()>
+                    <div class="launch-modal-header">
+                        <h3>"Launch Debug Session"</h3>
+                        <button class="collapse-btn" title="Close" on:click=close_modal>"✕"</button>
+                    </div>
+                    <div class="launch-modal-body">
+                        <label class="launch-field">
+                            <span>"Program path"</span>
+                            <input
+                                class="launch-input"
+                                placeholder="/abs/path/to/app.py"
+                                prop:value=move || program.get()
+                                on:input=move |ev| program.set(event_target_value(&ev))
+                            />
+                        </label>
+
+                        <label class="launch-field">
+                            <span>"Adapter"</span>
+                            <select
+                                class="launch-input"
+                                prop:value=move || adapter.get()
+                                on:change=move |ev| adapter.set(event_target_value(&ev))
+                            >
+                                <option value="python">"python"</option>
+                                <option value="node">"node"</option>
+                                <option value="typescript">"typescript"</option>
+                                <option value="lldb">"lldb"</option>
+                            </select>
+                        </label>
+
+                        <label class="launch-field">
+                            <span>"Breakpoints (optional, file:line; comma or newline separated)"</span>
+                            <textarea
+                                class="launch-input launch-breakpoints"
+                                placeholder="/abs/path/to/app.py:42"
+                                prop:value=move || breakpoints.get()
+                                on:input=move |ev| breakpoints.set(event_target_value(&ev))
+                            ></textarea>
+                        </label>
+
+                        <label class="launch-field">
+                            <span>"Session name (optional)"</span>
+                            <input
+                                class="launch-input"
+                                placeholder="session-custom"
+                                prop:value=move || session_name.get()
+                                on:input=move |ev| session_name.set(event_target_value(&ev))
+                            />
+                        </label>
+
+                        <Show when=move || error_msg.get().is_some()>
+                            <div class="launch-error">{move || error_msg.get().unwrap_or_default()}</div>
+                        </Show>
+                    </div>
+                    <div class="launch-modal-actions">
+                        <button class="debug-btn btn-theme" on:click=close_modal disabled=move || submitting.get()>
+                            "Cancel"
+                        </button>
+                        <button
+                            class=move || if submitting.get() { "debug-btn btn-continue btn-inflight" } else { "debug-btn btn-continue" }
+                            on:click=submit_launch
+                            disabled=move || submitting.get()
+                        >
+                            <Show when=move || submitting.get()>
+                                <span class="cmd-spinner"></span>
+                            </Show>
+                            {move || if submitting.get() { "Launching..." } else { "Launch" }}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </Show>
+    }
+}
+
+#[component]
+fn GlobalErrorToast() -> impl IntoView {
+    let ge = use_context::<GlobalError>().expect("no GlobalError").0;
+    view! {
+        <Show when=move || ge.get().is_some()>
+            <div class="global-error-toast">
+                <span>{move || ge.get().unwrap_or_default()}</span>
+                <button class="collapse-btn" on:click=move |_| ge.set(None)>"✕"</button>
+            </div>
+        </Show>
     }
 }
 
@@ -2639,6 +3227,14 @@ fn BreakpointsPanel(
             })
             .unwrap_or_default()
     };
+    let recent_bp = move || {
+        active_session.get()
+            .and_then(|id| session_data.get().get(&id).cloned())
+            .and_then(|s| s.recent_verified_breakpoint)
+    };
+    let bp_count = move || {
+        breakpoints().iter().map(|(_, specs)| specs.len()).sum::<usize>()
+    };
 
     let clear_all = {
         let ws_c = ws_senders.clone();
@@ -2662,6 +3258,7 @@ fn BreakpointsPanel(
         <div class="panel bp-panel" style=move || if bps_collapsed.get() { "flex: 0 0 32px; overflow: hidden;" } else { "flex: 0 0 auto; max-height: 200px; overflow: hidden; border-top: 1px solid var(--border);" }>
             <div class="panel-header">
                 <h2>"Breakpoints"</h2>
+                <span class="panel-chip">{move || bp_count().to_string()}</span>
                 <button
                     class="collapse-btn"
                     title="Clear all breakpoints"
@@ -2699,6 +3296,8 @@ fn BreakpointsPanel(
                                             let asi3 = asi2;
                                             move |spec: BreakpointSpec| {
                                                 let f2 = f.clone();
+                                                let f_for_class = f2.clone();
+                                                let f_for_click = f2.clone();
                                                 let at3 = at2;
                                                 let sd4 = sd3;
                                                 let asi4 = asi3;
@@ -2707,19 +3306,20 @@ fn BreakpointsPanel(
                                                 view! {
                                                     <li
                                                         class="bp-line-item"
+                                                        class:bp-just-verified=move || recent_bp() == Some((f_for_class.clone(), line))
                                                         style="cursor:pointer"
                                                         on:click=move |_| {
                                                             // Open that file in the editor
                                                             if let Some(id) = asi4.get_untracked() {
                                                                 sd4.update(|map| {
                                                                     if let Some(s) = map.get_mut(&id) {
-                                                                        if !s.open_files.contains(&f2) {
-                                                                            s.open_files.push(f2.clone());
+                                                                        if !s.open_files.contains(&f_for_click) {
+                                                                            s.open_files.push(f_for_click.clone());
                                                                         }
                                                                     }
                                                                 });
                                                             }
-                                                            at3.set(Some(f2.clone()));
+                                                            at3.set(Some(f_for_click.clone()));
                                                             // Scroll editor to line
                                                             editor::set_exec_line(line);
                                                         }
@@ -2770,6 +3370,11 @@ fn FindingsPanel(
             .map(|s| s.findings)
             .unwrap_or_default()
     };
+    let findings_latest_first = move || {
+        let mut items = findings();
+        items.reverse();
+        items
+    };
 
     view! {
         <div class="panel findings-panel" style=move || {
@@ -2778,11 +3383,12 @@ fn FindingsPanel(
             } else if findings().is_empty() {
                 "display: none;".to_string()
             } else {
-                format!("flex: 0 0 auto; max-height: 160px; overflow: auto; border-top: 1px solid var(--border);")
+                format!("flex: 0 0 auto; max-height: 220px; overflow: auto; border-top: 1px solid var(--border);")
             }
         }>
             <div class="panel-header">
                 <h2>"Findings"</h2>
+                <span class="panel-chip">{move || findings().len().to_string()}</span>
                 <button
                     class="collapse-btn"
                     title="Toggle findings panel"
@@ -2793,22 +3399,46 @@ fn FindingsPanel(
             <div class="panel-content scrollable">
                 <ul class="list-view">
                     <For
-                        each=findings
+                        each=findings_latest_first
                         key=|f| f.id
                         children=|f: FindingEntry| {
                             let icon = match f.level.as_str() { "error" => "🔴", "warning" => "🟡", _ => "🔵" };
                             let is_error = f.level == "error";
                             let is_warning = f.level == "warning";
+                            let msg_full = f.message.clone();
+                            let msg_short = truncate_text(&msg_full, 140);
+                            let is_long = msg_full.chars().count() > 140;
+                            let ts = f.timestamp.clone();
+                            let expanded = RwSignal::new(false);
                             view! {
                                 <li class="finding-item" class:finding-error=move || is_error class:finding-warning=move || is_warning>
                                     <span class="finding-icon">{icon}</span>
-                                    <span class="finding-msg">{f.message.clone()}</span>
+                                    <div class="finding-body">
+                                        <span class="finding-msg">
+                                            {move || {
+                                                if is_long && !expanded.get() { msg_short.clone() } else { msg_full.clone() }
+                                            }}
+                                        </span>
+                                        <div class="finding-meta-row">
+                                            <span class="finding-ts">{ts.clone()}</span>
+                                            <Show when=move || is_long>
+                                                <button
+                                                    class="finding-toggle"
+                                                    on:click=move |_| expanded.update(|v| *v = !*v)
+                                                >
+                                                    {move || if expanded.get() { "show less" } else { "show more" }}
+                                                </button>
+                                            </Show>
+                                        </div>
+                                    </div>
                                 </li>
                             }
                         }
                     />
                     <Show when=move || findings().is_empty()>
-                        <li class="empty-state">"No findings yet"</li>
+                        <li class="empty-state onboarding-empty-state">
+                            "No findings yet — add notes with annotate/add_finding so teammates and AI keep shared context."
+                        </li>
                     </Show>
                 </ul>
             </div>
@@ -2840,6 +3470,7 @@ fn WatchPanel(
             .map(|s| s.watch_results)
             .unwrap_or_default()
     };
+    let watch_loading = move || watch_results().iter().any(|(_, r)| r == "…");
 
     let add_watch = {
         let ws_add = ws_senders.clone();
@@ -2865,9 +3496,13 @@ fn WatchPanel(
     };
 
     view! {
-        <div class="panel watch-panel" style=move || if watch_collapsed.get() { "flex: 0 0 32px; overflow: hidden; border-top: 1px solid var(--border);" } else { "flex: 0 0 auto; max-height: 200px; border-top: 1px solid var(--border); overflow: hidden;" }>
+        <div class="panel watch-panel" class:panel-loading=watch_loading style=move || if watch_collapsed.get() { "flex: 0 0 32px; overflow: hidden; border-top: 1px solid var(--border);" } else { "flex: 0 0 auto; max-height: 200px; border-top: 1px solid var(--border); overflow: hidden;" }>
             <div class="panel-header">
                 <h2>"Watch"</h2>
+                <span class="panel-chip">{move || watches.get().len().to_string()}</span>
+                <Show when=watch_loading>
+                    <span class="panel-chip">"evaluating"</span>
+                </Show>
                 <button
                     class="collapse-btn"
                     title="Toggle Watch"
@@ -2889,9 +3524,10 @@ fn WatchPanel(
                                         .find(|(e, _)| e == &expr2)
                                         .map(|(_, r)| r)
                                 };
+                                let result_for_class = result.clone();
                                 let expr_del = expr.clone();
                                 view! {
-                                    <li class="var-item">
+                                    <li class="var-item" class:watch-pending=move || result_for_class().as_deref() == Some("…")>
                                         <span class="var-name">{expr.clone()}</span>
                                         <span class="var-sep">" = "</span>
                                         <span class="var-value">{move || result().unwrap_or_else(|| "…".into())}</span>
@@ -2967,7 +3603,7 @@ fn TimelinePanel(
                     {move || if timeline_collapsed.get() { "▸" } else { "▾" }}
                     " Timeline"
                 </h2>
-                <span class="badge" style="margin-left:auto;font-size:10px;color:var(--text-dim)">
+                <span class="panel-chip" style="margin-left:auto;">
                     {move || timeline().len()}
                 </span>
             </div>
@@ -3018,7 +3654,11 @@ fn TimelinePanel(
                         />
                     </ul>
                     {move || if timeline().is_empty() {
-                        view! { <div class="empty-msg">"No stops yet"</div> }.into_any()
+                        view! {
+                            <div class="empty-msg onboarding-empty-state">
+                                "No timeline stops yet — continue to a breakpoint or step once to start history."
+                            </div>
+                        }.into_any()
                     } else {
                         view! { <div></div> }.into_any()
                     }}
@@ -3032,8 +3672,56 @@ fn TimelinePanel(
 //  Utils
 // ─────────────────────────────────────────────
 
+fn read_window_storage(key: &str) -> Option<String> {
+    let win = web_sys::window()?;
+    let storage = Reflect::get(win.as_ref(), &JsValue::from_str("localStorage")).ok()?;
+    if storage.is_null() || storage.is_undefined() {
+        return None;
+    }
+    let get_item = Reflect::get(&storage, &JsValue::from_str("getItem"))
+        .ok()?
+        .dyn_into::<js_sys::Function>()
+        .ok()?;
+    let value = get_item
+        .call1(&storage, &JsValue::from_str(key))
+        .ok()?;
+    value.as_string()
+}
+
+fn write_window_storage(key: &str, value: &str) {
+    let Some(win) = web_sys::window() else { return; };
+    let Ok(storage) = Reflect::get(win.as_ref(), &JsValue::from_str("localStorage")) else { return; };
+    if storage.is_null() || storage.is_undefined() {
+        return;
+    }
+    let Ok(set_item) = Reflect::get(&storage, &JsValue::from_str("setItem")) else { return; };
+    let Ok(set_item_fn) = set_item.dyn_into::<js_sys::Function>() else { return; };
+    let _ = set_item_fn.call2(&storage, &JsValue::from_str(key), &JsValue::from_str(value));
+}
+
 fn basename(path: &str) -> String {
     path.split('/').last().unwrap_or(path).to_string()
+}
+
+fn parse_breakpoint_input(input: &str) -> Vec<String> {
+    input
+        .split(&[',', '\n', '\r'][..])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn truncate_text(value: &str, max_chars: usize) -> String {
+    let mut out = String::new();
+    for (idx, ch) in value.chars().enumerate() {
+        if idx >= max_chars {
+            out.push_str("...");
+            return out;
+        }
+        out.push(ch);
+    }
+    out
 }
 
 // ─────────────────────────────────────────────
