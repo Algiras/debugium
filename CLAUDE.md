@@ -30,29 +30,35 @@ Add to `.mcp.json` (project root) or `~/.claude.json`:
 Preferred: use a `dap.json` config from `examples/`:
 
 ```bash
-# Python
-debugium launch script.py --config examples/python.dap.json --breakpoint "$(pwd)/script.py:42"
+# Python — multiple breakpoints with -b (short for --breakpoint)
+debugium launch script.py --config examples/python.dap.json \
+  -b "$(pwd)/script.py:42" -b "$(pwd)/script.py:67"
+
+# Comma-separated lines in one file
+debugium launch script.py --adapter python --breakpoint "$(pwd)/script.py:10,15,20"
 
 # Node.js
-debugium launch app.js --config examples/node.dap.json --breakpoint "$(pwd)/app.js:15"
+debugium launch app.js --config examples/node.dap.json \
+  -b "$(pwd)/app.js:15" -b "$(pwd)/app.js:30"
 
 # TypeScript
-debugium launch app.ts --config examples/typescript.dap.json --breakpoint "$(pwd)/app.ts:10"
+debugium launch app.ts --config examples/typescript.dap.json -b "$(pwd)/app.ts:10"
 
 # C / C++ (compile with -g -O0 first)
 cc -g -O0 main.c -o /tmp/main
-debugium launch /tmp/main --config examples/c-cpp.dap.json --breakpoint "$(pwd)/main.c:20"
+debugium launch /tmp/main --config examples/c-cpp.dap.json -b "$(pwd)/main.c:20"
 
 # Rust
-cargo build && debugium launch ./target/debug/myapp --config examples/c-cpp.dap.json --breakpoint "$(pwd)/src/main.rs:10"
+cargo build && debugium launch ./target/debug/myapp --config examples/c-cpp.dap.json \
+  -b "$(pwd)/src/main.rs:10"
 
 # Remote attach (debugpy already listening on port 5678)
-debugium launch app.py --config examples/remote-python.dap.json --breakpoint "$(pwd)/app.py:42"
+debugium launch app.py --config examples/remote-python.dap.json -b "$(pwd)/app.py:42"
 ```
 
 Or use `--adapter` shorthand (Python only is built-in):
 ```bash
-debugium launch script.py --adapter python --breakpoint "$(pwd)/script.py:42"
+debugium launch script.py --adapter python -b "$(pwd)/script.py:42"
 ```
 
 Auto-discovery: place a `dap.json` in the project root and omit `--config`/`--adapter`.
