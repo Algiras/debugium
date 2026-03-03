@@ -1534,3 +1534,75 @@ fn v4_wait_for_output_returns_result() {
     // Must return matched + line fields
     assert!(text.contains("\"matched\""), "V4 expected 'matched' field: {text}");
 }
+
+// ─── W. Session persistence (export/import) ───────────────────────────────────
+
+#[test]
+fn w1_export_import_tools_listed() {
+    let mut p = McpProc::start(7331);
+    p.initialize();
+    let r = p.send("tools/list", Some(serde_json::json!({})));
+    p.stop();
+    let tools_json = serde_json::to_string(&r).unwrap();
+    assert!(tools_json.contains("export_session"), "export_session not in tools/list");
+    assert!(tools_json.contains("import_session"), "import_session not in tools/list");
+}
+
+#[test]
+fn w2_export_session_returns_bundle() {
+    require_debugpy!();
+    let srv = ServerGuard::launch(7425, Some(43), None);
+    assert!(srv.wait_up(12), "W2 server never started");
+    assert!(srv.wait_paused(12), "W2 session never paused");
+
+    let mut p = McpProc::start(7425);
+    p.initialize();
+    // Add some data first
+    p.tool_call("annotate", serde_json::json!({
+        "file": target_py().to_str().unwrap(), "line": 43,
+        "message": "test annotation", "color": "info"
+    }));
+    p.tool_call("add_finding", serde_json::json!({
+        "message": "test finding", "level": "warning"
+    }));
+    // Export
+    let r = p.tool_call("export_session", serde_json::json!({}));
+    p.stop();
+
+    let text = McpProc::text(&r);
+    assert!(r.get("error").is_none(), "W2 error: {r}");
+    assert!(text.contains("\"breakpoints\""), "expected breakpoints in export: {text}");
+    assert!(text.contains("\"annotations\""), "expected annotations in export: {text}");
+    assert!(text.contains("\"findings\""), "expected findings in export: {text}");
+    assert!(text.contains("test annotation"), "expected annotation content: {text}");
+    assert!(text.contains("test finding"), "expected finding content: {text}");
+}
+
+#[test]
+fn w3_import_session_restores_findings() {
+    require_debugpy!();
+    let srv = ServerGuard::launch(7426, Some(43), None);
+    assert!(srv.wait_up(12), "W3 server never started");
+    assert!(srv.wait_paused(12), "W3 session never paused");
+
+    let mut p = McpProc::start(7426);
+    p.initialize();
+    // Import a bundle with findings
+    let r = p.tool_call("import_session", serde_json::json!({
+        "data": {
+            "version": 1,
+            "findings": [
+                {"message": "imported bug", "level": "error"},
+                {"message": "imported note", "level": "info"}
+            ],
+            "annotations": [],
+            "watches": ["counter.value"]
+        }
+    }));
+    p.stop();
+
+    let text = McpProc::text(&r);
+    assert!(r.get("error").is_none(), "W3 error: {r}");
+    assert!(text.contains("findings: 2"), "expected 2 findings imported: {text}");
+    assert!(text.contains("watches: 1"), "expected 1 watch imported: {text}");
+}

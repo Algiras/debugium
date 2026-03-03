@@ -510,6 +510,27 @@ fn tool_list() -> Value {
                 }
             },
             {
+                "name": "export_session",
+                "description": "Export the current session's accumulated debugging knowledge: breakpoints, annotations, findings, and watch expressions. Returns a JSON bundle that can be imported into a new session on the same codebase.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "session_id": { "type": "string" } },
+                    "required": []
+                }
+            },
+            {
+                "name": "import_session",
+                "description": "Import previously exported debugging knowledge into the current session: restores breakpoints, annotations, findings, and watches. Use after re-launching a session on the same codebase.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string" },
+                        "data": { "type": "object", "description": "The JSON bundle from export_session." }
+                    },
+                    "required": ["data"]
+                }
+            },
+            {
                 "name": "get_variable_history",
                 "description": "Show how a local variable's value changed across all timeline stops. Useful for 'when did X become wrong?'",
                 "inputSchema": {
@@ -1668,6 +1689,112 @@ pub async fn dispatch_tool(
             let detail = format!("{} finding{}", findings.len(), if findings.len() == 1 { "" } else { "s" });
             broadcast_llm_query(hub, session_id, "get_findings", &detail).await;
             Ok(serde_json::to_string_pretty(&json!({ "findings": findings }))?)
+        }
+
+        "export_session" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
+            let breakpoints = s.breakpoints.read().await.clone();
+            let annotations = s.annotations.read().await.clone();
+            let findings = s.findings.read().await.clone();
+            let watches = s.watches.read().await.clone();
+
+            let meta = s.meta.read().await;
+            let meta_json = meta.as_ref().map(|m| json!({
+                "program": m.program.display().to_string(),
+                "adapter_id": m.adapter_id,
+                "started_at": m.started_at.to_rfc3339(),
+            })).unwrap_or(json!(null));
+            drop(meta);
+
+            let bundle = json!({
+                "version": 1,
+                "session_id": session_id,
+                "metadata": meta_json,
+                "breakpoints": breakpoints,
+                "annotations": annotations,
+                "findings": findings,
+                "watches": watches,
+                "exported_at": chrono::Utc::now().to_rfc3339(),
+            });
+
+            // Also save to disk
+            if let Ok(home) = crate::home::DebugiumHome::open() {
+                let dir = home.session_dir(session_id);
+                let _ = std::fs::create_dir_all(&dir);
+                let path = dir.join("export.json");
+                if let Ok(json_str) = serde_json::to_string_pretty(&bundle) {
+                    let _ = std::fs::write(&path, &json_str);
+                    tracing::info!("Session exported to {}", path.display());
+                }
+            }
+
+            Ok(serde_json::to_string_pretty(&bundle)?)
+        }
+
+        "import_session" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
+            let data = args.get("data").cloned()
+                .ok_or_else(|| anyhow::anyhow!("`data` is required — pass the JSON bundle from export_session"))?;
+
+            let mut imported = Vec::new();
+
+            // Restore breakpoints
+            if let Some(bps) = data.get("breakpoints").and_then(Value::as_object) {
+                for (file, specs_val) in bps {
+                    if let Ok(specs) = serde_json::from_value::<Vec<crate::dap::session::BpSpec>>(specs_val.clone()) {
+                        if !specs.is_empty() {
+                            match s.set_breakpoints_with_conditions(file, specs.clone()).await {
+                                Ok(_) => {
+                                    broadcast_breakpoints_changed(hub, session_id, file, &specs).await;
+                                    imported.push(format!("breakpoints: {} in {}", specs.len(), file.split('/').last().unwrap_or(file)));
+                                }
+                                Err(e) => imported.push(format!("breakpoints error for {}: {e}", file)),
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Restore annotations
+            if let Some(anns) = data.get("annotations").and_then(Value::as_array) {
+                for ann in anns {
+                    let file = ann.get("file").and_then(Value::as_str).unwrap_or("?");
+                    let line = ann.get("line").and_then(Value::as_u64).unwrap_or(0) as u32;
+                    let message = ann.get("message").and_then(Value::as_str).unwrap_or("");
+                    let color = ann.get("color").and_then(Value::as_str).unwrap_or("warning");
+                    if !message.is_empty() {
+                        s.add_annotation(file.to_string(), line, message.to_string(), color.to_string()).await;
+                    }
+                }
+                imported.push(format!("annotations: {}", anns.len()));
+            }
+
+            // Restore findings
+            if let Some(findings) = data.get("findings").and_then(Value::as_array) {
+                for f in findings {
+                    let message = f.get("message").and_then(Value::as_str).unwrap_or("");
+                    let level = f.get("level").and_then(Value::as_str).unwrap_or("info");
+                    if !message.is_empty() {
+                        s.add_finding(message.to_string(), level.to_string()).await;
+                    }
+                }
+                imported.push(format!("findings: {}", findings.len()));
+            }
+
+            // Restore watches
+            if let Some(watches) = data.get("watches").and_then(Value::as_array) {
+                let mut w = s.watches.write().await;
+                for expr in watches {
+                    if let Some(e) = expr.as_str() {
+                        if !w.contains(&e.to_string()) {
+                            w.push(e.to_string());
+                        }
+                    }
+                }
+                imported.push(format!("watches: {}", watches.len()));
+            }
+
+            Ok(format!("Imported: {}", imported.join(", ")))
         }
 
         "get_variable_history" => {
