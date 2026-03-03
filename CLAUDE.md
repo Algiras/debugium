@@ -49,7 +49,7 @@ cc -g -O0 main.c -o /tmp/main
 debugium launch /tmp/main --config examples/c-cpp.dap.json -b "$(pwd)/main.c:20"
 
 # Rust
-cargo build && debugium launch ./target/debug/myapp --config examples/c-cpp.dap.json \
+cargo build && debugium launch ./target/debug/myapp --config examples/rust.dap.json \
   -b "$(pwd)/src/main.rs:10"
 
 # Remote attach (debugpy already listening on port 5678)
@@ -104,6 +104,7 @@ evaluate              → eval arbitrary expression in current frame
 
 ### 3. Step — blocking, safe to chain
 `step_over`, `step_in`, `step_out` now **block until paused** and confirm the stop.
+`thread_id` is auto-detected from the last stopped event — no need to pass it.
 Chain them freely — each call waits for the previous step to complete:
 ```
 step_over → "paused (reason=step, thread=1). Call get_debug_context for location."
@@ -182,25 +183,40 @@ remove_watch(expression)
 launch_session(program, adapter?, config?, breakpoints?, session_id?)
 stop_session(session_id?)
 get_sessions / list_sessions
+get_capabilities                  (adapter feature flags — what's supported)
 
 # Breakpoints
-set_breakpoint(file, line, condition?)
 set_breakpoints(file, lines[])
+set_breakpoint(file, line, condition?)
+set_logpoint(file, line, log_message)
+set_function_breakpoints(names[]) (requires supportsFunctionBreakpoints)
+set_exception_breakpoints(filters[])
+set_data_breakpoint(variable)     (requires supportsDataBreakpoints)
 list_breakpoints / clear_breakpoints
+list_data_breakpoints / clear_data_breakpoints
+continue_until(file, line)        (temp breakpoint + continue)
 
-# Execution — all blocking except continue
-step_over / step_in / step_out    (thread_id=1 default)
+# Execution — thread_id auto-detected from last stopped event if omitted
+step_over / step_in / step_out
 continue_execution                (returns console_line_count)
-pause / disconnect
+pause / disconnect / terminate / restart
 
 # Inspection
-get_debug_context                 (START HERE)
+get_debug_context                 (START HERE — locals + stack + source window)
 get_stack_trace / get_scopes / get_variables / get_threads
 evaluate(expression, frame_id)
+get_source(file)
 get_console_output
+get_exception_info                (requires supportsExceptionInfoRequest)
+set_variable(variablesReference, name, value)
 
 # Output
 wait_for_output(pattern, from_line=0, timeout_secs=10)
+
+# Memory & disassembly (native debugging)
+read_memory(memory_reference, count)   (requires supportsReadMemoryRequest)
+write_memory(memory_reference, data)   (requires supportsWriteMemoryRequest)
+disassemble(memory_reference, count)   (requires supportsDisassembleRequest)
 
 # History
 get_timeline(limit=50)
@@ -215,9 +231,13 @@ get_findings
 # Watches
 add_watch / remove_watch / get_watches
 
+# Session persistence
+export_session → JSON bundle of state
+import_session(data) → restore from bundle
+
 # Compound
-get_debug_context                 (locals + stack + source window in one call)
-step_until(condition, max_steps)
+explain_exception                 (exceptionInfo + stack + locals in one call)
+step_until(condition, max_steps)  (condition is a runtime expression, e.g. Python: x > 5)
 run_until_exception
 compare_snapshots(stop_a, stop_b) (diff variable snapshots between two timeline stops)
 find_first_change(variable_name, expected_value?)  (first stop where variable changed)
