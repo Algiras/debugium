@@ -76,6 +76,10 @@ const CAPABILITY_GATED_TOOLS: &[(&str, &str)] = &[
     ("terminate",                "supportsTerminateRequest"),
     ("get_exception_info",       "supportsExceptionInfoRequest"),
     ("restart_frame",            "supportsRestartFrame"),
+    ("set_expression",           "supportsSetExpression"),
+    ("breakpoint_locations",     "supportsBreakpointLocationsRequest"),
+    ("step_in_targets",          "supportsStepInTargetsRequest"),
+    ("loaded_sources",           "supportsLoadedSourcesRequest"),
 ];
 
 fn tool_list(adapter_caps: &Value) -> Value {
@@ -788,6 +792,67 @@ fn tool_list(adapter_caps: &Value) -> Value {
                     "required": ["frame_id"],
                     "properties": {
                         "frame_id":   { "type": "integer", "description": "Stack frame ID to restart (from get_stack_trace)." },
+                        "session_id": { "type": "string" }
+                    }
+                }
+            },
+            {
+                "name": "breakpoint_locations",
+                "description": "Get valid breakpoint positions in a source file range. Returns the exact lines (and optionally columns) where breakpoints can be placed. Useful for verifying breakpoint placement before calling set_breakpoint.",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["file", "line"],
+                    "properties": {
+                        "file":       { "type": "string", "description": "Absolute path to the source file." },
+                        "line":       { "type": "integer", "description": "Start line of the range (1-indexed)." },
+                        "end_line":   { "type": "integer", "description": "End line of the range (defaults to start line)." },
+                        "session_id": { "type": "string" }
+                    }
+                }
+            },
+            {
+                "name": "step_in_targets",
+                "description": "List possible step-in targets at the current execution location. When a line has multiple function calls, this shows which one you can step into. Use the returned target IDs with step_in.",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["frame_id"],
+                    "properties": {
+                        "frame_id":   { "type": "integer", "description": "Stack frame ID (from get_stack_trace)." },
+                        "session_id": { "type": "string" }
+                    }
+                }
+            },
+            {
+                "name": "set_expression",
+                "description": "Set the value of an expression in the current stack frame context. Unlike set_variable which requires a variablesReference, this evaluates a full expression to determine the target. Requires adapter support (supportsSetExpression).",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["expression", "value", "frame_id"],
+                    "properties": {
+                        "expression": { "type": "string", "description": "The expression whose value should be set (e.g. 'obj.field', 'arr[0]')." },
+                        "value":      { "type": "string", "description": "New value as a string expression." },
+                        "frame_id":   { "type": "integer", "description": "Stack frame context." },
+                        "session_id": { "type": "string" }
+                    }
+                }
+            },
+            {
+                "name": "loaded_sources",
+                "description": "List all source files currently loaded by the debug adapter. Useful for discovering which files are available for breakpoints and inspection.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "session_id": { "type": "string" } },
+                    "required": []
+                }
+            },
+            {
+                "name": "source_by_reference",
+                "description": "Fetch the source code for a sourceReference (generated or internal code that has no file path). Use this for code that only exists in the adapter's memory, such as eval'd code, internal modules, or transpiled sources.",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["source_reference"],
+                    "properties": {
+                        "source_reference": { "type": "integer", "description": "The sourceReference ID (from stack frames or loaded sources)." },
                         "session_id": { "type": "string" }
                     }
                 }

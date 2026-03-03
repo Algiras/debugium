@@ -445,6 +445,75 @@ pub async fn dispatch_tool(
             Ok(format!("Frame {} restarted. Call get_debug_context for new location.", frame_id))
         }
 
+        // ── breakpointLocations ──────────────────────────────────────
+        "breakpoint_locations" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session not found"))?;
+            let file = args.get("file").and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("`file` is required"))?;
+            let line = require_u32(&args, "line")?;
+            let end_line = args.get("end_line").and_then(Value::as_u64).unwrap_or(line as u64) as u32;
+            let resp = s.active_client().await.request("breakpointLocations", Some(json!({
+                "source": { "path": file },
+                "line": line,
+                "endLine": end_line
+            }))).await?;
+            let locs = resp.get("body").and_then(|b| b.get("breakpoints"))
+                .cloned().unwrap_or(json!([]));
+            Ok(serde_json::to_string_pretty(&locs)?)
+        }
+
+        // ── stepInTargets ────────────────────────────────────────────
+        "step_in_targets" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session not found"))?;
+            let frame_id = require_u32(&args, "frame_id")?;
+            let resp = s.active_client().await.request("stepInTargets", Some(json!({
+                "frameId": frame_id
+            }))).await?;
+            let targets = resp.get("body").and_then(|b| b.get("targets"))
+                .cloned().unwrap_or(json!([]));
+            Ok(serde_json::to_string_pretty(&targets)?)
+        }
+
+        // ── setExpression ────────────────────────────────────────────
+        "set_expression" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session not found"))?;
+            let expression = args.get("expression").and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("`expression` is required"))?;
+            let value = args.get("value").and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("`value` is required"))?;
+            let frame_id = require_u32(&args, "frame_id")?;
+            let resp = s.active_client().await.request("setExpression", Some(json!({
+                "expression": expression,
+                "value": value,
+                "frameId": frame_id
+            }))).await?;
+            let new_val = resp.get("body").and_then(|b| b.get("value"))
+                .and_then(Value::as_str).unwrap_or("(no value returned)");
+            Ok(format!("{} = {}", expression, new_val))
+        }
+
+        // ── loadedSources ────────────────────────────────────────────
+        "loaded_sources" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session not found"))?;
+            let resp = s.active_client().await.request("loadedSources", None).await?;
+            let sources = resp.get("body").and_then(|b| b.get("sources"))
+                .cloned().unwrap_or(json!([]));
+            Ok(serde_json::to_string_pretty(&sources)?)
+        }
+
+        // ── source (by reference) ────────────────────────────────────
+        "source_by_reference" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session not found"))?;
+            let src_ref = require_u32(&args, "source_reference")? as i64;
+            let resp = s.active_client().await.request("source", Some(json!({
+                "source": { "sourceReference": src_ref },
+                "sourceReference": src_ref
+            }))).await?;
+            let content = resp.get("body").and_then(|b| b.get("content"))
+                .and_then(Value::as_str).unwrap_or("(no content returned)");
+            Ok(content.to_string())
+        }
+
         // ── Compound / LLM-optimised tools ────────────────────────────
         "get_debug_context" => {
             let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
