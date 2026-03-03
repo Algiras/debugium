@@ -238,13 +238,14 @@ fn tool_list() -> Value {
             },
             {
                 "name": "get_debug_context",
-                "description": "Get a compact, LLM-optimized snapshot of the current debug state in one call: paused location, local variables, call stack summary, source window (±5 lines), and active breakpoints. Use this instead of separate get_stack_trace + get_scopes + get_variables calls.",
+                "description": "Get a compact, LLM-optimized snapshot of the current debug state in one call: paused location, local variables (auto-expanded 1 level for objects), call stack summary, source window (±5 lines), active breakpoints, watch results, and what changed since the last stop. Use this instead of separate get_stack_trace + get_scopes + get_variables calls.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "session_id": { "type": "string" },
                         "thread_id": { "type": "integer", "description": "Thread to inspect. Default 1." },
-                        "verbosity": { "type": "string", "enum": ["compact", "full"], "description": "compact = top 10 vars + 3 frames; full = top 30 vars + all frames. Default: full." }
+                        "verbosity": { "type": "string", "enum": ["compact", "full"], "description": "compact = top 10 vars + 3 frames; full = top 30 vars + all frames. Default: full." },
+                        "expand_depth": { "type": "integer", "description": "Auto-expand nested variables up to this depth (0 = flat, 1 = one level). Default: 1." }
                     },
                     "required": []
                 }
@@ -1289,6 +1290,7 @@ pub async fn dispatch_tool(
             let compact = args.get("verbosity").and_then(Value::as_str).unwrap_or("full") == "compact";
             let max_frames: usize = if compact { 3 } else { 20 };
             let max_vars: usize = if compact { 10 } else { 30 };
+            let expand_depth = args.get("expand_depth").and_then(Value::as_u64).unwrap_or(1) as usize;
 
             // 1. stack trace
             let stack_resp = s.client.request("stackTrace", Some(json!({
@@ -1310,7 +1312,7 @@ pub async fn dispatch_tool(
                 format!("{}:{} in {}()", ffile, fline, fname)
             }).collect();
 
-            // 2. scopes → locals
+            // 2. scopes → locals with auto-expansion
             let mut locals = serde_json::Map::new();
             if let Ok(scopes_resp) = s.client.request("scopes", Some(json!({ "frameId": frame_id }))).await {
                 let scopes = scopes_resp.get("body").and_then(|b| b.get("scopes"))
@@ -1331,9 +1333,36 @@ pub async fn dispatch_tool(
                                         let name = v.get("name").and_then(Value::as_str).unwrap_or("?");
                                         let val  = v.get("value").and_then(Value::as_str).unwrap_or("?");
                                         let typ  = v.get("type").and_then(Value::as_str).unwrap_or("");
-                                        let entry = if typ.is_empty() { val.to_string() }
-                                                    else { format!("{val} ({typ})") };
-                                        locals.insert(name.to_string(), json!(entry));
+                                        let child_ref = v.get("variablesReference").and_then(Value::as_u64).unwrap_or(0);
+
+                                        if expand_depth > 0 && child_ref > 0 {
+                                            let mut obj = serde_json::Map::new();
+                                            if !typ.is_empty() { obj.insert("__type".into(), json!(typ)); }
+                                            obj.insert("__value".into(), json!(val));
+                                            if let Ok(child_resp) = s.client.request("variables",
+                                                Some(json!({ "variablesReference": child_ref }))).await {
+                                                if let Some(children) = child_resp.get("body")
+                                                    .and_then(|b| b.get("variables")).and_then(Value::as_array) {
+                                                    let max_children = 20;
+                                                    for cv in children.iter().take(max_children) {
+                                                        let cn = cv.get("name").and_then(Value::as_str).unwrap_or("?");
+                                                        let cval = cv.get("value").and_then(Value::as_str).unwrap_or("?");
+                                                        let ctyp = cv.get("type").and_then(Value::as_str).unwrap_or("");
+                                                        let centry = if ctyp.is_empty() { json!(cval) }
+                                                                     else { json!(format!("{cval} ({ctyp})")) };
+                                                        obj.insert(cn.to_string(), centry);
+                                                    }
+                                                    if children.len() > max_children {
+                                                        obj.insert("__truncated".into(), json!(format!("{} more", children.len() - max_children)));
+                                                    }
+                                                }
+                                            }
+                                            locals.insert(name.to_string(), json!(obj));
+                                        } else {
+                                            let entry = if typ.is_empty() { val.to_string() }
+                                                        else { format!("{val} ({typ})") };
+                                            locals.insert(name.to_string(), json!(entry));
+                                        }
                                     }
                                 }
                             }
@@ -1357,8 +1386,24 @@ pub async fn dispatch_tool(
                     .collect::<Vec<_>>().join("\n")
             } else { String::new() };
 
+            // 4. watches
+            let watches: Vec<Value> = s.watch_results.read().await.iter().map(|wr| {
+                json!({ "expression": wr.expression, "value": wr.value, "changed": wr.changed })
+            }).collect();
+
+            // 5. timeline delta — what changed since the last stop
+            let changed_since_last_stop = {
+                let tl = s.timeline.read().await;
+                tl.back().map(|entry| {
+                    json!({
+                        "stop_id": entry.id,
+                        "changed_vars": entry.changed_vars,
+                    })
+                }).unwrap_or(json!(null))
+            };
+
             let bps = s.breakpoints.read().await.clone();
-            let result = json!({
+            let mut result = json!({
                 "paused_at": format!("{}:{} in {}()",
                     file.split('/').last().unwrap_or(&file), line, func),
                 "file": file,
@@ -1371,6 +1416,12 @@ pub async fn dispatch_tool(
                 "source_window": source_window,
                 "breakpoints": bps,
             });
+            if !watches.is_empty() {
+                result["watches"] = json!(watches);
+            }
+            if !changed_since_last_stop.is_null() {
+                result["changed_since_last_stop"] = changed_since_last_stop;
+            }
             Ok(serde_json::to_string_pretty(&result)?)
         }
 
