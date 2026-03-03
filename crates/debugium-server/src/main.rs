@@ -407,10 +407,13 @@ async fn main() -> Result<()> {
                 #[cfg(unix)]
                 {
                     use tokio::signal::unix::{signal, SignalKind};
-                    let mut sigterm = signal(SignalKind::terminate()).unwrap();
-                    tokio::select! {
-                        _ = tokio::signal::ctrl_c() => {}
-                        _ = sigterm.recv() => {}
+                    if let Ok(mut sigterm) = signal(SignalKind::terminate()) {
+                        tokio::select! {
+                            _ = tokio::signal::ctrl_c() => {}
+                            _ = sigterm.recv() => {}
+                        }
+                    } else {
+                        tokio::signal::ctrl_c().await.ok();
                     }
                 }
                 #[cfg(not(unix))]
