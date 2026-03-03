@@ -1632,3 +1632,57 @@ fn w5_set_logpoint_tool_listed_in_tools() {
     let tools_json = serde_json::to_string(&r).unwrap();
     assert!(tools_json.contains("set_logpoint"), "set_logpoint not in tools/list");
 }
+
+// ─── X. continue_until (run to cursor) ────────────────────────────────────────
+
+#[test]
+fn x1_continue_until_reaches_target_line() {
+    require_debugpy!();
+    let srv = ServerGuard::launch(7429, Some(43), None);
+    assert!(srv.wait_up(12), "X1 server never started");
+    assert!(srv.wait_paused(12), "X1 session never paused");
+
+    let mut p = McpProc::start(7429);
+    p.initialize();
+    let r = p.tool_call("continue_until", serde_json::json!({
+        "file": target_py().to_str().unwrap(),
+        "line": 48
+    }));
+    p.stop();
+
+    let text = McpProc::text(&r);
+    assert!(r.get("error").is_none(), "X1 error: {r}");
+    assert!(text.contains("Stopped at"), "expected 'Stopped at' in response: {text}");
+}
+
+#[test]
+fn x2_continue_until_tool_listed() {
+    let mut p = McpProc::start(7331);
+    p.initialize();
+    let r = p.send("tools/list", Some(serde_json::json!({})));
+    p.stop();
+    let tools_json = serde_json::to_string(&r).unwrap();
+    assert!(tools_json.contains("continue_until"), "continue_until not in tools/list");
+}
+
+#[test]
+fn x3_continue_until_timeout_returns_message() {
+    require_debugpy!();
+    let srv = ServerGuard::launch(7430, Some(43), None);
+    assert!(srv.wait_up(12), "X3 server never started");
+    assert!(srv.wait_paused(12), "X3 session never paused");
+
+    let mut p = McpProc::start(7430);
+    p.initialize();
+    let r = p.tool_call("continue_until", serde_json::json!({
+        "file": target_py().to_str().unwrap(),
+        "line": 999,
+        "timeout_secs": 3
+    }));
+    p.stop();
+
+    let text = McpProc::text(&r);
+    assert!(r.get("error").is_none(), "X3 unexpected error: {r}");
+    assert!(text.contains("Timed out") || text.contains("Stopped at"),
+        "expected timeout or stop message: {text}");
+}
