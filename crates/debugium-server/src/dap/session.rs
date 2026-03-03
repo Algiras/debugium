@@ -37,6 +37,18 @@ pub struct BpSpec {
     pub log_message: Option<String>,
 }
 
+/// Data breakpoint spec (variable watchpoint).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DataBpSpec {
+    pub data_id: String,
+    pub access_type: String,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hit_condition: Option<String>,
+}
+
 /// Result of evaluating one watch expression at a stop.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WatchResult {
@@ -117,6 +129,8 @@ pub struct Session {
     pub watches: RwLock<Vec<String>>,
     /// Last evaluated results for each watch.
     pub watch_results: RwLock<Vec<WatchResult>>,
+    /// Active data breakpoints (variable watchpoints).
+    pub data_breakpoints: RwLock<Vec<DataBpSpec>>,
     /// Fires when the session terminates (exited/terminated DAP event).
     /// Listeners can clean up (e.g. remove from registry).
     pub terminated_tx: Arc<tokio::sync::watch::Sender<bool>>,
@@ -197,6 +211,7 @@ impl Session {
             timeline: RwLock::new(VecDeque::new()),
             watches: RwLock::new(Vec::new()),
             watch_results: RwLock::new(Vec::new()),
+            data_breakpoints: RwLock::new(Vec::new()),
             terminated_tx: terminated_tx.clone(),
         });
 
@@ -416,6 +431,7 @@ impl Session {
             timeline: RwLock::new(VecDeque::new()),
             watches: RwLock::new(Vec::new()),
             watch_results: RwLock::new(Vec::new()),
+            data_breakpoints: RwLock::new(Vec::new()),
             terminated_tx: terminated_tx.clone(),
         });
 

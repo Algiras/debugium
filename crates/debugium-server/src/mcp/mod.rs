@@ -383,8 +383,42 @@ fn tool_list() -> Value {
                 }
             },
             {
+                "name": "set_data_breakpoint",
+                "description": "Set a data breakpoint (watchpoint) — break when a variable's value changes, is read, or is written. First queries the adapter for eligibility via dataBreakpointInfo, then sets the breakpoint. Much faster than step_until_change for finding when a variable gets corrupted.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string" },
+                        "name": { "type": "string", "description": "Variable name to watch." },
+                        "variables_reference": { "type": "integer", "description": "The variablesReference of the scope/object containing the variable. Use 0 or omit to search by name only." },
+                        "access_type": { "type": "string", "enum": ["write", "read", "readWrite"], "description": "When to break. Default: 'write'." },
+                        "condition": { "type": "string", "description": "Optional condition expression." },
+                        "hit_condition": { "type": "string", "description": "Optional hit count condition." }
+                    },
+                    "required": ["name"]
+                }
+            },
+            {
+                "name": "list_data_breakpoints",
+                "description": "List all active data breakpoints (variable watchpoints).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "session_id": { "type": "string" } },
+                    "required": []
+                }
+            },
+            {
+                "name": "clear_data_breakpoints",
+                "description": "Remove all data breakpoints.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "session_id": { "type": "string" } },
+                    "required": []
+                }
+            },
+            {
                 "name": "get_capabilities",
-                "description": "Get the adapter capabilities returned during initialize. Useful to check if features like function breakpoints, exception info, or completions are supported.",
+                "description": "Get the adapter capabilities returned during initialize. Useful to check if features like function breakpoints, exception info, data breakpoints, or completions are supported.",
                 "inputSchema": {
                     "type": "object",
                     "properties": { "session_id": { "type": "string" } },
@@ -1263,6 +1297,95 @@ pub async fn dispatch_tool(
                 .collect();
             let resp = s.client.request("setExceptionBreakpoints", Some(json!({ "filters": filters }))).await?;
             Ok(format!("Exception breakpoints set: {:?}\n{}", filters, serde_json::to_string_pretty(&resp)?))
+        }
+
+        "set_data_breakpoint" => {
+            use crate::dap::session::DataBpSpec;
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
+            let name = args.get("name").and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("`name` is required"))?.to_string();
+            let vref = args.get("variables_reference").and_then(Value::as_u64).unwrap_or(0);
+            let access_type = args.get("access_type").and_then(Value::as_str).unwrap_or("write").to_string();
+            let condition = args.get("condition").and_then(Value::as_str).map(str::to_string);
+            let hit_condition = args.get("hit_condition").and_then(Value::as_str).map(str::to_string);
+
+            // Check adapter capability first
+            let caps = s.get_capabilities().await;
+            let supports_data_bp = caps.get("supportsDataBreakpoints")
+                .and_then(Value::as_bool).unwrap_or(false);
+            if !supports_data_bp {
+                return Ok(format!("Adapter does not support data breakpoints (supportsDataBreakpoints=false). Use step_until_change as an alternative."));
+            }
+
+            // 1. Query adapter for data breakpoint info (with timeout)
+            let info_result = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                s.client.request("dataBreakpointInfo", Some(json!({
+                    "variablesReference": vref,
+                    "name": name
+                })))
+            ).await;
+            let info_resp = match info_result {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => return Ok(format!("Cannot set data breakpoint on '{name}': adapter error: {e}")),
+                Err(_) => return Ok(format!("Cannot set data breakpoint on '{name}': adapter timed out")),
+            };
+            let body = info_resp.get("body").cloned().unwrap_or(json!(null));
+            let data_id = body.get("dataId").and_then(Value::as_str).map(str::to_string);
+
+            if let Some(data_id) = data_id {
+                let label = body.get("description").and_then(Value::as_str)
+                    .unwrap_or(&name).to_string();
+                let spec = DataBpSpec {
+                    data_id: data_id.clone(),
+                    access_type: access_type.clone(),
+                    label: label.clone(),
+                    condition: condition.clone(),
+                    hit_condition: hit_condition.clone(),
+                };
+
+                // Add to stored data breakpoints
+                let mut dbps = s.data_breakpoints.write().await;
+                dbps.retain(|d| d.data_id != data_id);
+                dbps.push(spec);
+
+                // 2. Set all data breakpoints with the adapter
+                let bp_args: Vec<Value> = dbps.iter().map(|d| {
+                    let mut obj = json!({ "dataId": d.data_id, "accessType": d.access_type });
+                    if let Some(c) = &d.condition { obj["condition"] = json!(c); }
+                    if let Some(hc) = &d.hit_condition { obj["hitCondition"] = json!(hc); }
+                    obj
+                }).collect();
+                drop(dbps);
+
+                let resp = s.client.request("setDataBreakpoints", Some(json!({
+                    "breakpoints": bp_args
+                }))).await?;
+
+                let verified = resp.get("body").and_then(|b| b.get("breakpoints"))
+                    .and_then(Value::as_array)
+                    .map(|arr| arr.iter().any(|bp| bp.get("verified").and_then(Value::as_bool).unwrap_or(false)))
+                    .unwrap_or(false);
+
+                Ok(format!("Data breakpoint set on '{label}' (access: {access_type}, verified: {verified})"))
+            } else {
+                let reason = body.get("description").and_then(Value::as_str).unwrap_or("not eligible");
+                Ok(format!("Cannot set data breakpoint on '{name}': {reason}"))
+            }
+        }
+
+        "list_data_breakpoints" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
+            let dbps = s.data_breakpoints.read().await.clone();
+            Ok(serde_json::to_string_pretty(&json!({ "data_breakpoints": dbps }))?)
+        }
+
+        "clear_data_breakpoints" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
+            let count = s.data_breakpoints.read().await.len();
+            s.data_breakpoints.write().await.clear();
+            s.client.request("setDataBreakpoints", Some(json!({ "breakpoints": [] }))).await?;
+            Ok(format!("Cleared {count} data breakpoint(s)."))
         }
 
         "get_capabilities" => {
