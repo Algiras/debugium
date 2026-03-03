@@ -381,6 +381,131 @@ Step until a variable's value changes.
 { "variable_name": "status", "max_steps": 20 }
 ```
 
+#### `explain_exception`
+When stopped on an exception, gather all relevant context in one call.
+```json
+{}
+```
+
+#### `restart_frame`
+Re-run execution from a specific stack frame (requires `supportsRestartFrame`).
+```json
+{ "frame_id": 2 }
+```
+
+---
+
+### Navigation & Source Discovery
+
+#### `goto_targets`
+Get valid jump targets for a given source location (requires `supportsGotoTargetsRequest`).
+```json
+{ "file": "/abs/path/to/file.py", "line": 43 }
+```
+
+#### `goto`
+Jump execution to a target without running intermediate code.
+```json
+{ "thread_id": 1, "target_id": 0 }
+```
+
+#### `breakpoint_locations`
+Get valid breakpoint positions in a line range (requires `supportsBreakpointLocationsRequest`).
+```json
+{ "file": "/abs/path/to/file.js", "line": 30, "end_line": 40 }
+```
+
+#### `step_in_targets`
+List possible step-in targets when a line has multiple calls (requires `supportsStepInTargetsRequest`).
+```json
+{ "frame_id": 0 }
+```
+
+#### `loaded_sources`
+List all source files currently loaded by the adapter (requires `supportsLoadedSourcesRequest`).
+```json
+{}
+```
+
+#### `source_by_reference`
+Fetch source code for generated/internal code by sourceReference ID.
+```json
+{ "source_reference": 2017626721 }
+```
+
+---
+
+### Mutation
+
+#### `set_expression`
+Set the value of an expression (requires `supportsSetExpression`).
+```json
+{ "expression": "obj.field", "value": "42", "frame_id": 0 }
+```
+
+---
+
+### Memory & Disassembly (native debugging)
+
+#### `read_memory`
+Read raw bytes from debuggee memory (requires `supportsReadMemoryRequest`).
+```json
+{ "memory_reference": "0x7fff5000", "count": 128 }
+```
+
+#### `write_memory`
+Write raw bytes to debuggee memory (requires `supportsWriteMemoryRequest`).
+```json
+{ "memory_reference": "0x7fff5000", "data": "AQIDBA==" }
+```
+
+#### `disassemble`
+Disassemble machine instructions (requires `supportsDisassembleRequest`).
+```json
+{ "memory_reference": "0x100003f00", "instruction_count": 20 }
+```
+
+---
+
+### Control
+
+#### `cancel_request`
+Cancel an in-flight request (requires `supportsCancelRequest`).
+```json
+{ "request_id": 42 }
+```
+
+---
+
+### Data Breakpoints (watchpoints)
+
+#### `set_data_breakpoint`
+Break when a variable is written/read.
+```json
+{ "name": "counter", "access_type": "write" }
+```
+
+#### `list_data_breakpoints` / `clear_data_breakpoints`
+```json
+{}
+```
+
+---
+
+### Session Persistence
+
+#### `export_session`
+Export breakpoints, annotations, findings, and watches as a JSON bundle.
+```json
+{}
+```
+
+#### `import_session`
+Restore exported state into the current session.
+```json
+{ "data": { "..." } }
+```
+
 ---
 
 ## Supported Adapters

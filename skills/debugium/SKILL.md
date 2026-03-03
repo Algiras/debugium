@@ -9,32 +9,63 @@ Debugium is a DAP (Debug Adapter Protocol) client with an MCP interface and a re
 
 ---
 
-## Quick Start
+## Setup & Connection
 
-### 1. Launch a session
+### 1. Install
+
+```bash
+cargo install --path crates/debugium-server
+```
+
+### 2. Register MCP server
+
+Add to `.mcp.json` (project root) or `~/.claude.json`:
+```json
+{
+  "mcpServers": {
+    "debugium": { "command": "debugium", "args": ["mcp"] }
+  }
+}
+```
+
+### 3. Install language prerequisites
+
+| Language | Install |
+|----------|---------|
+| Python | `pip install debugpy` |
+| Node.js / TypeScript | js-debug (build from microsoft/vscode-js-debug) + `npm i -g tsx` for TS |
+| C / C++ / Rust | `lldb-dap` (ships with LLVM: `brew install llvm`) |
+| Java | microsoft/java-debug adapter JAR |
+| Scala | Running Metals language server with DAP |
+
+### 4. Launch a debug session
+
+**Preferred**: use a `dap.json` config from `examples/`. All paths must be absolute.
 
 ```bash
 # Python — multiple breakpoints with -b
-debugium launch /abs/path/to/script.py --adapter python \
-  -b /abs/path/to/script.py:42 -b /abs/path/to/script.py:67
+debugium launch /abs/path/script.py --config examples/python.dap.json \
+  -b /abs/path/script.py:42 -b /abs/path/script.py:67
 
 # Comma-separated lines in one file
-debugium launch /abs/path/to/script.py --adapter python \
-  --breakpoint /abs/path/to/script.py:10,15,20
+debugium launch /abs/path/script.py --adapter python \
+  --breakpoint /abs/path/script.py:10,15,20
 
-# Node.js / JavaScript
-debugium launch /abs/path/to/app.js --adapter node \
-  -b /abs/path/to/app.js:15 -b /abs/path/to/app.js:30
+# Node.js
+debugium launch /abs/path/app.js --config examples/node.dap.json \
+  -b /abs/path/app.js:15 -b /abs/path/app.js:30
 
-# TypeScript (via tsx or ts-node)
-debugium launch /abs/path/to/app.ts --adapter node -b /abs/path/to/app.ts:10
+# TypeScript
+debugium launch /abs/path/app.ts --config examples/typescript.dap.json \
+  -b /abs/path/app.ts:10
 
-# C / C++ (compile with -g -O0 first)
-debugium launch /tmp/a.out --config examples/c-cpp.dap.json -b /abs/path/main.c:20
+# C / C++ (compile with debug symbols first: cc -g -O0)
+debugium launch /tmp/a.out --config examples/c-cpp.dap.json \
+  -b /abs/path/main.c:20
 
 # Rust (cargo build first)
-cargo build && debugium launch ./target/debug/my_program --adapter lldb \
-  -b /abs/path/src/main.rs:60
+debugium launch ./target/debug/myapp --config examples/c-cpp.dap.json \
+  -b /abs/path/src/main.rs:10
 
 # Remote attach (debugpy already listening on 127.0.0.1:5678)
 python3 -m debugpy --listen 127.0.0.1:5678 --wait-for-client app.py &
@@ -42,18 +73,13 @@ debugium launch app.py --config examples/remote-python.dap.json \
   -b /abs/path/app.py:42
 ```
 
-### 2. Add to `.mcp.json` (project root) or `~/.claude.json`
+**Shorthand** (Python only): `debugium launch script.py --adapter python -b ...`
 
-```json
-{
-  "mcpServers": {
-    "debugium": {
-      "command": "debugium",
-      "args": ["mcp"]
-    }
-  }
-}
-```
+**Auto-discovery**: place `dap.json` in project root, then just `debugium launch program -b ...`
+
+### 5. Verify connection
+
+Call `get_sessions` — if empty, the server isn't running. Launch a session first.
 
 ---
 
@@ -353,6 +379,131 @@ Stack + locals for each frame in one call.
 Step until a variable's value changes.
 ```json
 { "variable_name": "status", "max_steps": 20 }
+```
+
+#### `explain_exception`
+When stopped on an exception, gather all relevant context in one call.
+```json
+{}
+```
+
+#### `restart_frame`
+Re-run execution from a specific stack frame (requires `supportsRestartFrame`).
+```json
+{ "frame_id": 2 }
+```
+
+---
+
+### Navigation & Source Discovery
+
+#### `goto_targets`
+Get valid jump targets for a given source location (requires `supportsGotoTargetsRequest`).
+```json
+{ "file": "/abs/path/to/file.py", "line": 43 }
+```
+
+#### `goto`
+Jump execution to a target without running intermediate code.
+```json
+{ "thread_id": 1, "target_id": 0 }
+```
+
+#### `breakpoint_locations`
+Get valid breakpoint positions in a line range (requires `supportsBreakpointLocationsRequest`).
+```json
+{ "file": "/abs/path/to/file.js", "line": 30, "end_line": 40 }
+```
+
+#### `step_in_targets`
+List possible step-in targets when a line has multiple calls (requires `supportsStepInTargetsRequest`).
+```json
+{ "frame_id": 0 }
+```
+
+#### `loaded_sources`
+List all source files currently loaded by the adapter (requires `supportsLoadedSourcesRequest`).
+```json
+{}
+```
+
+#### `source_by_reference`
+Fetch source code for generated/internal code by sourceReference ID.
+```json
+{ "source_reference": 2017626721 }
+```
+
+---
+
+### Mutation
+
+#### `set_expression`
+Set the value of an expression (requires `supportsSetExpression`).
+```json
+{ "expression": "obj.field", "value": "42", "frame_id": 0 }
+```
+
+---
+
+### Memory & Disassembly (native debugging)
+
+#### `read_memory`
+Read raw bytes from debuggee memory (requires `supportsReadMemoryRequest`).
+```json
+{ "memory_reference": "0x7fff5000", "count": 128 }
+```
+
+#### `write_memory`
+Write raw bytes to debuggee memory (requires `supportsWriteMemoryRequest`).
+```json
+{ "memory_reference": "0x7fff5000", "data": "AQIDBA==" }
+```
+
+#### `disassemble`
+Disassemble machine instructions (requires `supportsDisassembleRequest`).
+```json
+{ "memory_reference": "0x100003f00", "instruction_count": 20 }
+```
+
+---
+
+### Control
+
+#### `cancel_request`
+Cancel an in-flight request (requires `supportsCancelRequest`).
+```json
+{ "request_id": 42 }
+```
+
+---
+
+### Data Breakpoints (watchpoints)
+
+#### `set_data_breakpoint`
+Break when a variable is written/read.
+```json
+{ "name": "counter", "access_type": "write" }
+```
+
+#### `list_data_breakpoints` / `clear_data_breakpoints`
+```json
+{}
+```
+
+---
+
+### Session Persistence
+
+#### `export_session`
+Export breakpoints, annotations, findings, and watches as a JSON bundle.
+```json
+{}
+```
+
+#### `import_session`
+Restore exported state into the current session.
+```json
+{ "data": { "..." } }
 ```
 
 ---

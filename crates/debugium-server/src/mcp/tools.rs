@@ -514,6 +514,57 @@ pub async fn dispatch_tool(
             Ok(content.to_string())
         }
 
+        // ── goto / gotoTargets ───────────────────────────────────────
+        "goto_targets" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session not found"))?;
+            let file = args.get("file").and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("`file` is required"))?;
+            let line = require_u32(&args, "line")?;
+            let mut params = json!({
+                "source": { "path": file },
+                "line": line
+            });
+            if let Some(col) = args.get("column").and_then(Value::as_u64) {
+                params["column"] = json!(col);
+            }
+            let resp = s.active_client().await.request("gotoTargets", Some(params)).await?;
+            let targets = resp.get("body").and_then(|b| b.get("targets"))
+                .cloned().unwrap_or(json!([]));
+            Ok(serde_json::to_string_pretty(&targets)?)
+        }
+
+        "goto" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session not found"))?;
+            let thread_id = require_u32(&args, "thread_id")?;
+            let target_id = require_u32(&args, "target_id")?;
+            let mut stopped_rx = s.stopped_tx.subscribe();
+            s.active_client().await.request("goto", Some(json!({
+                "threadId": thread_id,
+                "targetId": target_id
+            }))).await?;
+            match tokio::time::timeout(std::time::Duration::from_secs(5), stopped_rx.changed()).await {
+                Ok(_) => Ok(format!("Jumped to target {} and paused. Call get_debug_context for new location.", target_id)),
+                Err(_) => Ok(format!("Jumped to target {}. Program may be running — set a breakpoint or call pause if needed.", target_id)),
+            }
+        }
+
+        // ── cancel ───────────────────────────────────────────────────
+        "cancel_request" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session not found"))?;
+            let mut params = json!({});
+            if let Some(req_id) = args.get("request_id").and_then(Value::as_u64) {
+                params["requestId"] = json!(req_id);
+            }
+            if let Some(token) = args.get("progress_token").and_then(Value::as_str) {
+                params["progressToken"] = json!(token);
+            }
+            if params.as_object().map_or(true, |o| o.is_empty()) {
+                return Err(anyhow::anyhow!("Either `request_id` or `progress_token` is required"));
+            }
+            s.active_client().await.request("cancel", Some(params)).await?;
+            Ok("Request cancelled.".to_string())
+        }
+
         // ── Compound / LLM-optimised tools ────────────────────────────
         "get_debug_context" => {
             let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;

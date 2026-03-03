@@ -80,6 +80,9 @@ const CAPABILITY_GATED_TOOLS: &[(&str, &str)] = &[
     ("breakpoint_locations",     "supportsBreakpointLocationsRequest"),
     ("step_in_targets",          "supportsStepInTargetsRequest"),
     ("loaded_sources",           "supportsLoadedSourcesRequest"),
+    ("goto_targets",             "supportsGotoTargetsRequest"),
+    ("goto",                     "supportsGotoTargetsRequest"),
+    ("cancel_request",           "supportsCancelRequest"),
 ];
 
 fn tool_list(adapter_caps: &Value) -> Value {
@@ -855,6 +858,46 @@ fn tool_list(adapter_caps: &Value) -> Value {
                         "source_reference": { "type": "integer", "description": "The sourceReference ID (from stack frames or loaded sources)." },
                         "session_id": { "type": "string" }
                     }
+                }
+            },
+            {
+                "name": "goto_targets",
+                "description": "Get valid jump targets for a given source location. Returns a list of targets with IDs that can be passed to the goto tool. Use this to discover where execution can jump to before calling goto.",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["file", "line"],
+                    "properties": {
+                        "file":       { "type": "string", "description": "Absolute path to the source file." },
+                        "line":       { "type": "integer", "description": "Line number to find jump targets for (1-indexed)." },
+                        "column":     { "type": "integer", "description": "Optional column number for more precise targeting." },
+                        "session_id": { "type": "string" }
+                    }
+                }
+            },
+            {
+                "name": "goto",
+                "description": "Jump execution to a target location without running intermediate code. Unlike continue_until (which executes code up to a line), goto skips directly. Use goto_targets first to get a valid target ID.",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["thread_id", "target_id"],
+                    "properties": {
+                        "thread_id":  { "type": "integer", "description": "Thread to jump. Use get_threads to find the thread ID." },
+                        "target_id":  { "type": "integer", "description": "Target ID from goto_targets." },
+                        "session_id": { "type": "string" }
+                    }
+                }
+            },
+            {
+                "name": "cancel_request",
+                "description": "Cancel an in-flight DAP request that is taking too long (e.g. a hung evaluate or long-running continue). Pass the progress token or request ID to cancel.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "request_id":    { "type": "integer", "description": "The sequence ID of the request to cancel (from DAP request_seq)." },
+                        "progress_token": { "type": "string", "description": "Progress token to cancel (alternative to request_id)." },
+                        "session_id":    { "type": "string" }
+                    },
+                    "required": []
                 }
             }
     ]);

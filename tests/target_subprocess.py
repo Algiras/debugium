@@ -1,5 +1,6 @@
 """Parent script: spawns a child Python process via subprocess.
 Used to test debugpy's subProcess auto-attach feature.
+Run via: debugium launch tests/target_subprocess.py --adapter python --breakpoint $(pwd)/tests/target_subprocess.py:15
 """
 import subprocess
 import sys

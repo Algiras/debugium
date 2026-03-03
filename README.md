@@ -13,19 +13,23 @@ Debug Python, JavaScript, TypeScript, C, C++, Rust, Java, Scala, and WebAssembly
 
 ## Features
 
-- **Real-time web UI** — source viewer, breakpoints, variables, call stack, console, timeline, watch expressions, findings
+- **Real-time web UI** — source viewer, breakpoints, variables (recursive expansion), call stack, console, timeline, watch expressions, findings
 - **Multi-language** — Python (debugpy), Node.js/TypeScript (js-debug), C/C++/Rust (lldb-dap), Java (java-debug), Scala (Metals), WebAssembly (lldb-dap), or any DAP adapter via `dap.json`
-- **MCP integration** — 40+ tools exposing the full debug session to Claude or any LLM
-- **Multi-session** — debug multiple programs simultaneously
+- **MCP integration** — 50+ tools exposing the full debug session to Claude or any LLM
+- **Comprehensive DAP coverage** — 35 DAP requests implemented including breakpoints, stepping, goto, memory, disassembly, and more
+- **Capability-gated tools** — MCP tools automatically shown/hidden based on what the debug adapter supports
+- **Multi-session** — debug multiple programs simultaneously, with child session routing (js-debug)
 - **Execution timeline** — every stop recorded with changed variables and stack summary
 - **Watch expressions** — evaluated automatically at every breakpoint
 - **Annotations & findings** — LLM (or you) pin notes to source lines and record conclusions
-- **Conditional breakpoints** — break only when an expression is true
+- **Breakpoints** — conditional, logpoints, hit-count, function, data (watchpoints), exception, run-to-cursor
 - **Keyboard shortcuts** — F5 continue, F10 step over, F11 step in, Shift+F11 step out
 - **Dark / light mode** toggle
-- **Variable search** filter
-- **Panel collapse** — resize or hide any panel
+- **Variable search** filter with recursive expansion
+- **Thread selector** — switch between threads in multi-threaded programs
+- **Panel collapse** — resize or hide any panel (Slim / Standard / Full layouts)
 - **Auto-reconnect** — UI reconnects to the server after a dropped WebSocket
+- **Session export/import** — save and restore debugging knowledge across sessions
 
 ---
 
@@ -225,24 +229,28 @@ debugium bp clear
 
 ## MCP Tools
 
-When connected via MCP, 40+ tools are available. Key ones:
+When connected via MCP, 50+ tools are available. Key ones:
 
 | Category | Tools |
 |----------|-------|
 | **Orient** | `get_debug_context` ★ (paused location + locals + stack + source in one call) |
-| **Breakpoints** | `set_breakpoint`, `set_breakpoints`, `list_breakpoints`, `clear_breakpoints`, `set_function_breakpoints`, `set_exception_breakpoints` |
-| **Execution** | `continue_execution`, `step_over`, `step_in`, `step_out`, `pause`, `disconnect` |
-| **Inspection** | `get_stack_trace`, `get_scopes`, `get_variables`, `evaluate`, `get_threads`, `get_source` |
+| **Breakpoints** | `set_breakpoint`, `set_breakpoints`, `set_logpoint`, `list_breakpoints`, `clear_breakpoints`, `set_function_breakpoints`, `set_exception_breakpoints`, `set_data_breakpoint`, `breakpoint_locations` |
+| **Execution** | `continue_execution`, `step_over`, `step_in`, `step_out`, `pause`, `goto`, `disconnect`, `terminate`, `restart` |
+| **Inspection** | `get_stack_trace`, `get_scopes`, `get_variables`, `evaluate`, `get_threads`, `get_source`, `get_capabilities`, `loaded_sources`, `source_by_reference`, `step_in_targets` |
+| **Mutation** | `set_variable`, `set_expression` |
 | **Output** | `get_console_output`, `wait_for_output` (with `from_line` to avoid stale matches) |
-| **History** | `get_timeline`, `get_variable_history` (traces a variable across all stops) |
+| **Memory** | `read_memory`, `write_memory`, `disassemble` (native debugging) |
+| **History** | `get_timeline`, `get_variable_history`, `compare_snapshots`, `find_first_change` |
 | **Annotations** | `annotate`, `get_annotations`, `add_finding`, `get_findings` |
 | **Watches** | `add_watch`, `remove_watch`, `get_watches` |
-| **Compound** | `step_until`, `run_until_exception` |
-| **Session** | `get_sessions`, `list_sessions` |
+| **Compound** | `step_until`, `step_until_change`, `continue_until`, `run_until_exception`, `explain_exception`, `get_call_tree`, `restart_frame` |
+| **Session** | `get_sessions`, `list_sessions`, `launch_session`, `stop_session`, `export_session`, `import_session` |
+| **Control** | `goto_targets`, `cancel_request` |
 
 > **Note**: `step_over`, `step_in`, and `step_out` are **blocking** — they wait for the
 > adapter to pause before returning. Safe to chain back-to-back without sleeps.
 > `continue_execution` returns `console_line_count` for use with `wait_for_output`.
+> Tools like `read_memory`, `goto`, and `restart_frame` only appear when the adapter supports them.
 
 See [SKILL.md](SKILL.md) for the full reference with input schemas.
 

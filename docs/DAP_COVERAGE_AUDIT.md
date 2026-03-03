@@ -41,6 +41,9 @@ This document compares Debugium's implementation against the full DAP (Debug Ada
 | **setExpression** | `tools.rs` (set_expression) | Requires `supportsSetExpression`; set value via expression |
 | **loadedSources** | `tools.rs` (loaded_sources) | Requires `supportsLoadedSourcesRequest`; list all loaded files |
 | **source** | `tools.rs` (source_by_reference) | Fetch code by sourceReference (for generated/internal code) |
+| **gotoTargets** | `tools.rs` (goto_targets) | Requires `supportsGotoTargetsRequest`; query valid jump targets |
+| **goto** | `tools.rs` (goto) | Requires `supportsGotoTargetsRequest`; jump execution to a target |
+| **cancel** | `tools.rs` (cancel_request) | Requires `supportsCancelRequest`; abort in-flight requests |
 
 ---
 
@@ -51,11 +54,8 @@ This document compares Debugium's implementation against the full DAP (Debug Ada
 | **setInstructionBreakpoints** | Low | Rare (native debuggers) | Requires `supportsInstructionBreakpoints`; LLDB, GDB only |
 | **stepBack** | Low | Rare | Time-travel debugging; requires `supportsStepBack` |
 | **reverseContinue** | Low | Rare | Time-travel; requires `supportsStepBack` |
-| **goto** | Medium | Uncommon | Jump to line; requires `supportsGotoTargetsRequest` |
 | **terminateThreads** | Low | Uncommon | Kill specific threads; requires `supportsTerminateThreadsRequest` |
 | **modules** | Low | Uncommon | List loaded modules; requires `supportsModulesRequest` |
-| **gotoTargets** | Low | Uncommon | Valid goto targets; required for `goto` |
-| **cancel** | Medium | Common | Cancel in-flight request; useful for long-running ops |
 
 ---
 
@@ -124,8 +124,8 @@ All other DAP events are forwarded to WebSocket clients via `broadcast_json`. Th
 | Priority | Requests | Events | Reverse |
 |----------|----------|--------|---------|
 | **High** | — | — | runInTerminal (partial) |
-| **Medium** | goto, cancel | — | — |
-| **Low** | setInstructionBreakpoints, stepBack, reverseContinue, terminateThreads, modules, gotoTargets | — | — |
+| **Medium** | — | — | — |
+| **Low** | setInstructionBreakpoints, stepBack, reverseContinue, terminateThreads, modules | — | — |
 
 ### Capability-Gated MCP Tools
 
@@ -146,11 +146,14 @@ These tools are only exposed when the adapter declares the corresponding capabil
 | breakpoint_locations | supportsBreakpointLocationsRequest |
 | step_in_targets | supportsStepInTargetsRequest |
 | loaded_sources | supportsLoadedSourcesRequest |
+| goto_targets | supportsGotoTargetsRequest |
+| goto | supportsGotoTargetsRequest |
+| cancel_request | supportsCancelRequest |
 
 ---
 
 ## Recommendations
 
 1. **runInTerminal**: Implement actual terminal execution or document that Debugium does not support it (adapters may spawn processes expecting a real terminal).
-2. **cancel**: Add support for cancelling in-flight requests (e.g. long `continue` or `evaluate`).
-3. **goto**: Consider adding if adapters commonly support it for "run to line" workflows beyond `continue_until`.
+2. **modules**: Consider adding if needed for DLL/module inspection use cases.
+3. **stepBack / reverseContinue**: Only worth implementing if time-travel adapters (rr, UDB) become common.

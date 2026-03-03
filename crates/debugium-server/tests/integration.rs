@@ -1318,7 +1318,7 @@ fn t1_get_stack_trace_auto_detects_paused_thread() {
     let target = target_threads_py();
     require_debugpy!();
     let port = free_port();
-    let srv = ServerGuard::launch_with_target(port, target, 6);
+    let srv = ServerGuard::launch_with_target(port, target, 10);
     assert!(srv.wait_up(15), "T1 server never started");
     assert!(srv.wait_paused(15), "T1 never paused at breakpoint");
 
@@ -1342,7 +1342,7 @@ fn t2_get_threads_returns_thread_list() {
     let target = target_threads_py();
     require_debugpy!();
     let port = free_port();
-    let srv = ServerGuard::launch_with_target(port, target, 6);
+    let srv = ServerGuard::launch_with_target(port, target, 10);
     assert!(srv.wait_up(15), "T2 server never started");
     assert!(srv.wait_paused(15), "T2 never paused");
 
@@ -1365,7 +1365,7 @@ fn t3_evaluate_auto_resolves_frame_via_paused_thread() {
     let target = target_threads_py();
     require_debugpy!();
     let port = free_port();
-    let srv = ServerGuard::launch_with_target(port, target, 6);
+    let srv = ServerGuard::launch_with_target(port, target, 10);
     assert!(srv.wait_up(15), "T3 server never started");
     assert!(srv.wait_paused(15), "T3 never paused");
 
@@ -1393,7 +1393,7 @@ fn t4_get_debug_context_auto_detects_thread() {
     let target = target_threads_py();
     require_debugpy!();
     let port = free_port();
-    let srv = ServerGuard::launch_with_target(port, target, 6);
+    let srv = ServerGuard::launch_with_target(port, target, 10);
     assert!(srv.wait_up(15), "T4 server never started");
     assert!(srv.wait_paused(15), "T4 never paused");
 
