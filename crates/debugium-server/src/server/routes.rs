@@ -250,6 +250,22 @@ pub async fn launch_session_handler(
 
     state.sessions.insert(session.clone()).await;
 
+    // Auto-remove session from registry after termination
+    {
+        let reg = state.sessions.clone();
+        let sid_cleanup = session.id.clone();
+        let mut term_rx = session.terminated_tx.subscribe();
+        tokio::spawn(async move {
+            while term_rx.changed().await.is_ok() {
+                if *term_rx.borrow() {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    reg.remove(&sid_cleanup).await;
+                    break;
+                }
+            }
+        });
+    }
+
     let program = PathBuf::from(&body.program);
     let cwd = std::env::current_dir().unwrap_or_default();
     let breakpoints = parse_breakpoints_str(body.breakpoints.unwrap_or_default());

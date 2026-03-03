@@ -1732,13 +1732,17 @@ pub async fn dispatch_tool(
             let program_str = args.get("program").and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("`program` is required"))?;
             let program = std::path::PathBuf::from(program_str);
-            let adapter_str = args.get("adapter").and_then(Value::as_str).unwrap_or("python");
+            let adapter_str = args.get("adapter").and_then(Value::as_str);
             let config_path = args.get("config").and_then(Value::as_str);
 
             let kind = if let Some(cfg) = config_path {
                 crate::dap::adapter::AdapterKind::from_str(cfg)
+            } else if let Some(a) = adapter_str {
+                crate::dap::adapter::AdapterKind::from_str(a)
             } else {
-                crate::dap::adapter::AdapterKind::from_str(adapter_str)
+                // Auto-detect: try multi-config, then extension, then default to python
+                crate::dap::adapter::adapter_kind_from_extension(&program)
+                    .unwrap_or(crate::dap::adapter::AdapterKind::Python)
             };
 
             let adapter = crate::dap::adapter::Adapter::new(kind);
@@ -1753,6 +1757,22 @@ pub async fn dispatch_tool(
                 .map_err(|e| anyhow::anyhow!("Failed to create session: {e}"))?;
 
             registry.insert(session.clone()).await;
+
+            // Auto-remove session from registry after termination
+            {
+                let reg = registry.clone();
+                let sid_cleanup = sid.clone();
+                let mut term_rx = session.terminated_tx.subscribe();
+                tokio::spawn(async move {
+                    while term_rx.changed().await.is_ok() {
+                        if *term_rx.borrow() {
+                            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                            reg.remove(&sid_cleanup).await;
+                            break;
+                        }
+                    }
+                });
+            }
 
             // Parse breakpoints
             let bp_strs: Vec<String> = args.get("breakpoints")
