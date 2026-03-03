@@ -6,11 +6,9 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
-use tokio::process::{Child, ChildStdin, ChildStdout};
+use tokio::process::{Child, ChildStdin};
 use tokio::sync::{mpsc, oneshot, RwLock};
 use tracing::{debug, error, warn};
-
-use dap_types::DapMessage;
 
 type PendingMap = Arc<RwLock<HashMap<u32, oneshot::Sender<Value>>>>;
 
@@ -20,6 +18,7 @@ pub struct DapClient {
     seq: AtomicU32,
     sender: mpsc::Sender<String>,
     pending: PendingMap,
+    #[allow(dead_code)]
     event_tx: mpsc::Sender<Value>,
 }
 

@@ -8,7 +8,6 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
 use dap_types::WsCommand;

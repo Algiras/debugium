@@ -138,6 +138,7 @@ pub struct Session {
 
 impl Session {
     /// Returns true if the adapter declared support for the given capability key.
+    #[allow(dead_code)]
     pub async fn supports(&self, cap: &str) -> bool {
         self.capabilities.read().await
             .get(cap)

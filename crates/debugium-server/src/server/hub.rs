@@ -83,6 +83,7 @@ impl Hub {
     }
 
     /// List all active session IDs.
+    #[allow(dead_code)]
     pub async fn session_ids(&self) -> Vec<String> {
         self.sessions.read().await.keys().cloned().collect()
     }

@@ -885,7 +885,18 @@ pub async fn dispatch_tool(
                 }).collect::<Vec<_>>().into_iter().rev().collect()
             };
 
-            Ok(serde_json::to_string_pretty(&json!({
+            // Check if we're actually stopped on an exception (exceptionId meaningful)
+            let looks_like_non_exception = exc_info.get("exceptionId")
+                .and_then(Value::as_str)
+                .map(|s| s.is_empty() || s.to_lowercase().contains("unknown"))
+                .unwrap_or(true);
+            let note = if looks_like_non_exception {
+                "Note: not currently stopped on an exception. The data below reflects the current stack frame, not an actual exception.\n\n"
+            } else {
+                ""
+            };
+
+            let result_json = json!({
                 "exception": exc_info,
                 "paused_at": format!("{}:{} in {}()",
                     file.split('/').last().unwrap_or(&file), line, func),
@@ -899,7 +910,9 @@ pub async fn dispatch_tool(
                 "source_window": source_window,
                 "recent_output": recent_output,
                 "recent_timeline": recent_timeline,
-            }))?)
+            });
+            let json_str = serde_json::to_string_pretty(&result_json)?;
+            Ok(format!("{note}{json_str}"))
         }
 
         "disconnect" => {
@@ -923,6 +936,16 @@ pub async fn dispatch_tool(
             let log_message = args.get("log_message")
                 .or_else(|| args.get("message"))
                 .and_then(Value::as_str).map(str::to_string);
+
+            // Gate logpoints on adapter capability (same pattern as set_data_breakpoint)
+            if log_message.is_some() {
+                let caps = s.get_capabilities().await;
+                let supports_log_points = caps.get("supportsLogPoints")
+                    .and_then(Value::as_bool).unwrap_or(false);
+                if !supports_log_points {
+                    return Ok("Adapter does not support log points (supportsLogPoints=false).".to_string());
+                }
+            }
 
             let new_spec = BpSpec { line, condition: condition.clone(), hit_condition: hit_condition.clone(), log_message: log_message.clone() };
 
