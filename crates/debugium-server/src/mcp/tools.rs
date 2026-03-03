@@ -123,7 +123,7 @@ pub async fn dispatch_tool(
         // ── Execution control ──────────────────────────────────────────
         "continue_execution" => {
             let s = session.ok_or_else(|| anyhow::anyhow!("Session not found"))?;
-            let thread_id = args.get("thread_id").and_then(Value::as_u64).unwrap_or(1) as u32;
+            let thread_id = resolve_thread_id(&args, &s).await;
             broadcast_command(hub, session_id, "continue").await;
             // Capture line count BEFORE continuing so the LLM can pass it to wait_for_output.
             let console_line_count = s.console_lines.read().await.len();
@@ -137,7 +137,7 @@ pub async fn dispatch_tool(
 
         "step_over" => {
             let s = session.ok_or_else(|| anyhow::anyhow!("Session not found"))?;
-            let thread_id = require_u32(&args, "thread_id")?;
+            let thread_id = resolve_thread_id(&args, &s).await;
             broadcast_command(hub, session_id, "next").await;
             let mut stopped_rx = s.stopped_tx.subscribe();
             s.active_client().await.request("next", Some(json!({ "threadId": thread_id }))).await?;
@@ -147,7 +147,7 @@ pub async fn dispatch_tool(
 
         "step_in" => {
             let s = session.ok_or_else(|| anyhow::anyhow!("Session not found"))?;
-            let thread_id = require_u32(&args, "thread_id")?;
+            let thread_id = resolve_thread_id(&args, &s).await;
             broadcast_command(hub, session_id, "stepIn").await;
             let mut stopped_rx = s.stopped_tx.subscribe();
             s.active_client().await.request("stepIn", Some(json!({ "threadId": thread_id }))).await?;
@@ -157,7 +157,7 @@ pub async fn dispatch_tool(
 
         "step_out" => {
             let s = session.ok_or_else(|| anyhow::anyhow!("Session not found"))?;
-            let thread_id = require_u32(&args, "thread_id")?;
+            let thread_id = resolve_thread_id(&args, &s).await;
             broadcast_command(hub, session_id, "stepOut").await;
             let mut stopped_rx = s.stopped_tx.subscribe();
             s.active_client().await.request("stepOut", Some(json!({ "threadId": thread_id }))).await?;
@@ -167,7 +167,7 @@ pub async fn dispatch_tool(
 
         "pause" => {
             let s = session.ok_or_else(|| anyhow::anyhow!("Session not found"))?;
-            let thread_id = require_u32(&args, "thread_id")?;
+            let thread_id = resolve_thread_id(&args, &s).await;
             broadcast_command(hub, session_id, "pause").await;
             let resp = s.active_client().await.request("pause", Some(json!({ "threadId": thread_id }))).await?;
             Ok(format!("Paused thread {thread_id}\n{}", serde_json::to_string_pretty(&resp)?))
@@ -399,7 +399,7 @@ pub async fn dispatch_tool(
 
         "get_exception_info" => {
             let s = session.ok_or_else(|| anyhow::anyhow!("Session not found"))?;
-            let thread_id = require_u32(&args, "thread_id")?;
+            let thread_id = resolve_thread_id(&args, &s).await;
             let resp = s.active_client().await.request("exceptionInfo", Some(json!({ "threadId": thread_id }))).await?;
             let body = resp.get("body").cloned().unwrap_or(Value::Null);
             Ok(serde_json::to_string_pretty(&body)?)
@@ -631,7 +631,7 @@ pub async fn dispatch_tool(
             let file = args.get("file").and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("`file` is required"))?;
             let target_line = require_u32(&args, "line")?;
-            let thread_id = args.get("thread_id").and_then(Value::as_u64).unwrap_or(1) as u32;
+            let thread_id = resolve_thread_id(&args, &s).await;
             let timeout = args.get("timeout_secs").and_then(Value::as_u64).unwrap_or(15);
 
             // Save existing breakpoints for this file
@@ -690,7 +690,7 @@ pub async fn dispatch_tool(
             let condition = args.get("condition").and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("`condition` is required"))?;
             let max_steps = args.get("max_steps").and_then(Value::as_u64).unwrap_or(20) as usize;
-            let thread_id = args.get("thread_id").and_then(Value::as_u64).unwrap_or(1) as u32;
+            let thread_id = resolve_thread_id(&args, &s).await;
 
             let mut steps = 0;
             let mut hit = false;
@@ -727,7 +727,7 @@ pub async fn dispatch_tool(
 
         "run_until_exception" => {
             let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
-            let thread_id = args.get("thread_id").and_then(Value::as_u64).unwrap_or(1) as u32;
+            let thread_id = resolve_thread_id(&args, &s).await;
             let timeout = args.get("timeout_secs").and_then(Value::as_u64).unwrap_or(30);
 
             // Enable 'raised' exception breakpoints
@@ -1617,7 +1617,7 @@ pub async fn dispatch_tool(
             let var_name = args.get("variable_name").and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("`variable_name` is required"))?;
             let max_steps = args.get("max_steps").and_then(Value::as_u64).unwrap_or(20) as usize;
-            let thread_id = args.get("thread_id").and_then(Value::as_u64).unwrap_or(1) as u32;
+            let thread_id = resolve_thread_id(&args, &s).await;
 
             // Get the current value via evaluate
             let get_value = |s: &Arc<crate::dap::session::Session>, tid: u32, expr: &str| {
@@ -1770,4 +1770,14 @@ async fn paused_thread_id(session: &Arc<crate::dap::session::Session>) -> u32 {
         .and_then(|b: &Value| b.get("threadId"))
         .and_then(Value::as_u64)
         .unwrap_or(1) as u32
+}
+
+/// Extract thread_id from args, falling back to the most recently stopped thread.
+/// Works correctly for Python (thread 1) and Node.js/js-debug (thread 0).
+async fn resolve_thread_id(args: &Value, session: &Arc<crate::dap::session::Session>) -> u32 {
+    if let Some(t) = args.get("thread_id").and_then(Value::as_u64) {
+        t as u32
+    } else {
+        paused_thread_id(session).await
+    }
 }
