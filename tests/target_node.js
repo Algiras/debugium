@@ -1,59 +1,58 @@
 /**
- * Debugium JavaScript test target.
- * Run via:  debugium launch tests/target_node.js --adapter node --serve
- *
- * Covers: closures, async/await, generator functions, structured data.
+ * Debugium Node.js test target — mirrors target_python.py for cross-language testing.
+ * Run via: debugium launch tests/target_node.js --config examples/node.dap.json --breakpoint $(pwd)/tests/target_node.js:30
  */
 
-// ── Generator ──────────────────────────────────────────────────── //
-function* fibonacci() {
-    let [a, b] = [0, 1];
-    while (true) {
-        yield a;
-        [a, b] = [b, a + b];
+function fibonacci(n) {
+    const seq = [0, 1];
+    for (let i = 2; i < n; i++) {
+        seq.push(seq[i - 1] + seq[i - 2]);
+    }
+    return seq.slice(0, n);
+}
+
+function classify(value) {
+    if (value % 15 === 0) return "fizzbuzz";
+    if (value % 3 === 0) return "fizz";
+    if (value % 5 === 0) return "buzz";
+    return String(value);
+}
+
+class Counter {
+    constructor(start = 0) {
+        this.value = start;
+        this.history = [];
+    }
+    increment(by = 1) {
+        this.value += by;
+        this.history.push(this.value);
+        return this.value;
     }
 }
 
-// ── Async ──────────────────────────────────────────────────────── //
-async function fetchMock(id) {
-    // Simulates async work without network
-    await new Promise((r) => setTimeout(r, 10));
-    return { id, payload: `data-${id}`, ts: Date.now() };
-}
+function main() {
+    // Breakpoint target 1
+    const fibs = fibonacci(10);
+    const result = fibs.map(classify);
+    console.log("Fibonacci classified:", result);
 
-// ── Classifier ────────────────────────────────────────────────── //
-function classify(n) {
-    if (n % 15 === 0) return "fizzbuzz";
-    if (n % 3 === 0) return "fizz";
-    if (n % 5 === 0) return "buzz";
-    return String(n);
-}
-
-// ── Main ──────────────────────────────────────────────────────── //
-async function main() {
-    // Breakpoint target 1: generator demo
-    const gen = fibonacci();
-    const fibs = Array.from({ length: 10 }, () => gen.next().value);
-    const classified = fibs.map(classify);
-    console.log("Fibonacci:", fibs);
-    console.log("Classified:", classified);
-
-    // Breakpoint target 2: async batch
-    const ids = [1, 2, 3, 4, 5];
-    const results = await Promise.all(ids.map(fetchMock));
-    for (const r of results) {
-        const label = classify(r.id);
-        console.log(`  id=${r.id} (${label}) → ${r.payload}`);
+    // Breakpoint target 2
+    const counter = new Counter(10);
+    for (const step of [1, 2, 3, 5, 8, 13]) {
+        counter.increment(step);
+        const label = classify(counter.value);
+        console.log(`  step=${step} → counter=${counter.value} (${label})`);
     }
 
-    // Breakpoint target 3: structured state
-    const state = {
+    // Breakpoint target 3
+    const data = {
         name: "debugium",
+        version: [0, 1, 0],
         adapters: ["python", "node", "lldb"],
-        runs: results.length,
-        success: true,
+        active: true,
     };
-    console.log("Final state:", state);
+    console.log("Final counter:", JSON.stringify(counter));
+    console.log("Metadata:", JSON.stringify(data));
 }
 
-main().catch(console.error);
+main();
