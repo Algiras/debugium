@@ -380,9 +380,14 @@ pub async fn dispatch_tool(
 
         "clear_data_breakpoints" => {
             let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
+            let caps = s.get_capabilities().await;
+            let supports_data_bp = caps.get("supportsDataBreakpoints")
+                .and_then(Value::as_bool).unwrap_or(false);
             let count = s.data_breakpoints.read().await.len();
             s.data_breakpoints.write().await.clear();
-            s.client.request("setDataBreakpoints", Some(json!({ "breakpoints": [] }))).await?;
+            if supports_data_bp {
+                s.client.request("setDataBreakpoints", Some(json!({ "breakpoints": [] }))).await?;
+            }
             Ok(format!("Cleared {count} data breakpoint(s)."))
         }
 
