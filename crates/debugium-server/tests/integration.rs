@@ -1740,3 +1740,59 @@ fn y2_explain_exception_returns_structured_context() {
     let _ = child.wait();
     let _ = std::fs::remove_file(&tmp);
 }
+
+// ─── Z. Data breakpoints (watchpoints) ────────────────────────────────────────
+
+#[test]
+fn z1_data_breakpoint_tools_listed() {
+    let mut p = McpProc::start(7331);
+    p.initialize();
+    let r = p.send("tools/list", Some(serde_json::json!({})));
+    p.stop();
+    let tools_json = serde_json::to_string(&r).unwrap();
+    assert!(tools_json.contains("set_data_breakpoint"), "set_data_breakpoint not in tools/list");
+    assert!(tools_json.contains("list_data_breakpoints"), "list_data_breakpoints not in tools/list");
+    assert!(tools_json.contains("clear_data_breakpoints"), "clear_data_breakpoints not in tools/list");
+}
+
+#[test]
+fn z2_list_data_breakpoints_empty() {
+    require_debugpy!();
+    let srv = ServerGuard::launch(7432, Some(43), None);
+    assert!(srv.wait_up(12), "Z2 server never started");
+    assert!(srv.wait_paused(12), "Z2 session never paused");
+
+    let mut p = McpProc::start(7432);
+    p.initialize();
+    let r = p.tool_call("list_data_breakpoints", serde_json::json!({}));
+    p.stop();
+
+    let text = McpProc::text(&r);
+    assert!(r.get("error").is_none(), "Z2 error: {r}");
+    assert!(text.contains("data_breakpoints"), "expected data_breakpoints field: {text}");
+}
+
+#[test]
+fn z3_set_data_breakpoint_protocol_flow() {
+    require_debugpy!();
+    let srv = ServerGuard::launch(7433, Some(43), None);
+    assert!(srv.wait_up(12), "Z3 server never started");
+    assert!(srv.wait_paused(12), "Z3 session never paused");
+
+    let mut p = McpProc::start(7433);
+    p.initialize();
+    let r = p.tool_call("set_data_breakpoint", serde_json::json!({
+        "name": "fibs",
+        "variables_reference": 0
+    }));
+    p.stop();
+
+    let text = McpProc::text(&r);
+    assert!(r.get("error").is_none(), "Z3 unexpected RPC error: {r}");
+    assert!(
+        text.contains("Data breakpoint set")
+            || text.contains("Cannot set data breakpoint")
+            || text.contains("does not support"),
+        "expected success, eligibility, or unsupported message: {text}"
+    );
+}
