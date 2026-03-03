@@ -593,6 +593,27 @@ fn tool_list() -> Value {
                 }
             },
             {
+                "name": "export_session",
+                "description": "Export the current session's accumulated debugging knowledge: breakpoints, annotations, findings, and watch expressions. Returns a JSON bundle that can be imported into a new session on the same codebase.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "session_id": { "type": "string" } },
+                    "required": []
+                }
+            },
+            {
+                "name": "import_session",
+                "description": "Import previously exported debugging knowledge into the current session: restores breakpoints, annotations, findings, and watches. Use after re-launching a session on the same codebase.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string" },
+                        "data": { "type": "object", "description": "The JSON bundle from export_session." }
+                    },
+                    "required": ["data"]
+                }
+            },
+            {
                 "name": "get_variable_history",
                 "description": "Show how a local variable's value changed across all timeline stops. Useful for 'when did X become wrong?'",
                 "inputSchema": {
