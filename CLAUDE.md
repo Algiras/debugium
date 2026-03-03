@@ -163,6 +163,10 @@ remove_watch(expression)
 | What did I already annotate? | `get_annotations` |
 | What did I already conclude? | `get_findings` |
 | Multiple sessions? | `list_sessions`, then pass `session_id` to all tools |
+| Where can I set breakpoints? | `breakpoint_locations(file, line, end_line)` |
+| What files are loaded? | `loaded_sources` |
+| What can I step into? | `step_in_targets(frame_id)` |
+| Fetch generated/internal source? | `source_by_reference(source_reference)` |
 
 ---
 
@@ -209,6 +213,13 @@ get_source(file)
 get_console_output
 get_exception_info                (requires supportsExceptionInfoRequest)
 set_variable(variablesReference, name, value)
+set_expression(expression, value, frame_id)   (requires supportsSetExpression)
+
+# Source discovery
+breakpoint_locations(file, line, end_line?)   (requires supportsBreakpointLocationsRequest)
+step_in_targets(frame_id)                     (requires supportsStepInTargetsRequest)
+loaded_sources                                (requires supportsLoadedSourcesRequest)
+source_by_reference(source_reference)         (fetch code by sourceReference for generated/internal code)
 
 # Output
 wait_for_output(pattern, from_line=0, timeout_secs=10)
@@ -243,4 +254,5 @@ compare_snapshots(stop_a, stop_b) (diff variable snapshots between two timeline 
 find_first_change(variable_name, expected_value?)  (first stop where variable changed)
 get_call_tree(max_depth=5)        (stack + locals for each frame in one call)
 step_until_change(variable_name, max_steps=20)     (step until variable value changes)
+restart_frame(frame_id)          (requires supportsRestartFrame)
 ```
