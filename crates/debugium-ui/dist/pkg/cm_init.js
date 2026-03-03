@@ -12,7 +12,7 @@ import { oneDark } from "https://esm.sh/@codemirror/theme-one-dark@6";
 import { syntaxHighlighting, HighlightStyle } from "https://esm.sh/@codemirror/language@6";
 import { tags } from "https://esm.sh/@lezer/highlight@1";
 import { RangeSetBuilder } from "https://esm.sh/@codemirror/state@6";
-import { Decoration, ViewPlugin } from "https://esm.sh/@codemirror/view@6";
+import { Decoration, ViewPlugin, WidgetType } from "https://esm.sh/@codemirror/view@6";
 
 // ─── Light theme (VS Code Light style) ──────────────────────────────────────
 
@@ -420,8 +420,8 @@ const inlineValuesPlugin = ViewPlugin.fromClass(class {
     }
 }, { decorations: v => v.decorations });
 
-class InlineValueWidget {
-    constructor(text) { this.text = text; }
+class InlineValueWidget extends WidgetType {
+    constructor(text) { super(); this.text = text; }
     toDOM() {
         const span = document.createElement("span");
         span.className = "cm-inline-value";

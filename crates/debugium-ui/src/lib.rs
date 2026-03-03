@@ -683,13 +683,17 @@ pub fn App() -> impl IntoView {
                                             });
                                             for (file, lines_val) in bps {
                                                 if let Some(lines) = lines_val.as_array() {
-                                                    let line_nums: Vec<u32> = lines.iter()
-                                                        .filter_map(|v| v.as_u64().map(|l| l as u32))
+                                                    let specs: Vec<BreakpointSpec> = lines.iter()
+                                                        .filter_map(|v| {
+                                                            let line = v.get("line").and_then(Value::as_u64)
+                                                                .or_else(|| v.as_u64())
+                                                                .map(|l| l as u32)?;
+                                                            let condition = v.get("condition").and_then(Value::as_str).map(str::to_string);
+                                                            let log_message = v.get("log_message").and_then(Value::as_str).map(str::to_string);
+                                                            Some(BreakpointSpec { line, condition, log_message, ..Default::default() })
+                                                        })
                                                         .collect();
-                                                    if !line_nums.is_empty() {
-                                                        let specs: Vec<BreakpointSpec> = line_nums.iter()
-                                                            .map(|&line| BreakpointSpec { line, ..Default::default() })
-                                                            .collect();
+                                                    if !specs.is_empty() {
                                                         state.breakpoints.insert(file.clone(), specs);
                                                         if !state.open_files.contains(file) {
                                                             state.open_files.push(file.clone());
