@@ -194,6 +194,20 @@ pub struct LayoutState {
     pub layout_preset: RwSignal<String>,
     /// variable name filter text
     pub var_filter: RwSignal<String>,
+    /// max console log entries (default 200)
+    pub max_logs: usize,
+    /// max timeline entries (default 500)
+    pub max_timeline: usize,
+    /// max command history entries (default 50)
+    pub max_history: usize,
+}
+
+/// Configurable limits (provided as context, used in non-component functions).
+#[derive(Clone, Copy)]
+pub struct UiLimits {
+    pub max_logs: usize,
+    pub max_timeline: usize,
+    pub max_history: usize,
 }
 
 // ─────────────────────────────────────────────
@@ -262,8 +276,27 @@ pub fn App() -> impl IntoView {
     let last_event_session: RwSignal<Option<String>> = RwSignal::new(None);
     let global_error: RwSignal<Option<String>> = RwSignal::new(None);
     let reconnect_tick: RwSignal<u32> = RwSignal::new(0);
+    let reconnect_delays: RwSignal<std::collections::HashMap<String, u32>> = RwSignal::new(std::collections::HashMap::new());
     let onboarding_dismissed: RwSignal<bool> = RwSignal::new(false);
     let show_launch_modal: RwSignal<bool> = RwSignal::new(false);
+
+    // Parse configurable limits from URL params (?max_logs=500&max_timeline=1000&max_history=100)
+    let url_params = web_sys::window()
+        .and_then(|w| w.location().search().ok())
+        .unwrap_or_default();
+    let parse_param = |name: &str, default: usize| -> usize {
+        url_params.split('&')
+            .find_map(|p| {
+                let p = p.trim_start_matches('?');
+                let (k, v) = p.split_once('=')?;
+                if k == name { v.parse().ok() } else { None }
+            })
+            .unwrap_or(default)
+    };
+    let max_logs = parse_param("max_logs", 200);
+    let max_timeline = parse_param("max_timeline", 500);
+    let max_history = parse_param("max_history", 50);
+
     let layout = LayoutState {
         left_collapsed: RwSignal::new(false),
         right_collapsed: RwSignal::new(false),
@@ -292,6 +325,9 @@ pub fn App() -> impl IntoView {
             }
         }),
         var_filter: RwSignal::new(String::new()),
+        max_logs,
+        max_timeline,
+        max_history,
     };
 
     provide_context(WsSenders(ws_senders));
@@ -301,6 +337,8 @@ pub fn App() -> impl IntoView {
     provide_context(LastEventSession(last_event_session));
     provide_context(GlobalError(global_error));
     provide_context(layout.clone());
+    let limits = UiLimits { max_logs, max_timeline, max_history };
+    provide_context(limits);
 
     // Auto-clear global UI error toast after a short delay.
     {
@@ -431,6 +469,24 @@ pub fn App() -> impl IntoView {
                                 }
                             }
                         }
+                        // Prune sessions that the server no longer reports (auto-cleanup)
+                        {
+                            let known: Vec<String> = sessions.get_untracked();
+                            for old_id in &known {
+                                if !ids.contains(old_id) {
+                                    sessions.update(|s| s.retain(|x| x != old_id));
+                                    session_data.update(|m| { m.remove(old_id); });
+                                    ws_senders.update(|m| { m.remove(old_id); });
+                                    ws_connected.update(|m| { m.remove(old_id); });
+                                    poll_known.remove(old_id);
+                                    // If this was the active session, switch to another
+                                    if active_session.get_untracked().as_deref() == Some(old_id.as_str()) {
+                                        active_session.set(ids.first().cloned());
+                                    }
+                                }
+                            }
+                        }
+
                         // Store enriched meta per session
                         let metas_snap: Vec<(String, Value)> = arr.iter().filter_map(|v| {
                             v.get("id").and_then(|id| id.as_str()).map(|id| (id.to_string(), v.clone()))
@@ -472,7 +528,12 @@ pub fn App() -> impl IntoView {
                 // Mark as disconnected initially
                 ws_connected.update(|m| { m.insert(id.clone(), false); });
 
-                let ws_url = format!("ws://{}/ws?session={}", host, id);
+                let ws_proto = if web_sys::window()
+                    .and_then(|w| w.location().protocol().ok())
+                    .map(|p| p == "https:")
+                    .unwrap_or(false)
+                { "wss" } else { "ws" };
+                let ws_url = format!("{}://{}/ws?session={}", ws_proto, host, id);
                 let ws = match WebSocket::new(&ws_url) { Ok(w) => w, Err(_) => continue };
                 ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
 
@@ -481,9 +542,13 @@ pub fn App() -> impl IntoView {
                     let ws_connected_open = ws_connected.clone();
                     let ws_senders_open = ws_senders.clone();
                     let session_data_open = session_data.clone();
+                    let reconnect_delays_open = reconnect_delays.clone();
+                    let global_error_open = global_error.clone();
                     let id_open = id.clone();
                     let onopen = Closure::wrap(Box::new(move |_: JsValue| {
                         ws_connected_open.update(|m| { m.insert(id_open.clone(), true); });
+                        reconnect_delays_open.update(|m| { m.remove(&id_open); });
+                        global_error_open.set(None);
                         // Fetch /state to replay the stopped event for late-joining clients
                         let session_data_state = session_data_open.clone();
                         let ws_senders_state = ws_senders_open.clone();
@@ -642,7 +707,7 @@ pub fn App() -> impl IntoView {
                     onopen.forget();
                 }
 
-                // onclose: mark disconnected, remove sender, schedule reconnect with backoff
+                // onclose: mark disconnected, remove sender, schedule reconnect with exponential backoff
                 // (but skip reconnect if the session has ended — process exited normally)
                 {
                     let ws_connected_close = ws_connected.clone();
@@ -650,20 +715,28 @@ pub fn App() -> impl IntoView {
                     let session_data_close = session_data.clone();
                     let global_error_close = global_error.clone();
                     let id_close = id.clone();
+                    let reconnect_delay_close = reconnect_delays.clone();
                     let onclose = Closure::wrap(Box::new(move |_: JsValue| {
                         ws_connected_close.update(|m| { m.insert(id_close.clone(), false); });
-                        global_error_close.set(Some(format!("Session '{id_close}' disconnected, retrying...")));
+                        let delay = reconnect_delay_close.get_untracked()
+                            .get(&id_close).copied().unwrap_or(1000u32);
+                        global_error_close.set(Some(format!("Session '{}' disconnected, reconnecting in {}s...", id_close, delay / 1000)));
+                        let next_delay = (delay * 2).min(30_000);
+                        reconnect_delay_close.update(|m| { m.insert(id_close.clone(), next_delay); });
                         let ws_senders_retry = ws_senders_close.clone();
                         let session_data_retry = session_data_close.clone();
+                        let global_error_retry = global_error_close.clone();
                         let id_retry = id_close.clone();
                         leptos::task::spawn_local(async move {
-                            gloo_timers::future::sleep(std::time::Duration::from_millis(1000)).await;
+                            gloo_timers::future::sleep(std::time::Duration::from_millis(delay as u64)).await;
                             // Don't reconnect if the session ended normally
                             let is_ended = session_data_retry.get_untracked()
                                 .get(&id_retry).map(|s| s.status == "ended").unwrap_or(false);
                             if !is_ended {
                                 ws_senders_retry.update(|m| { m.remove(&id_retry); });
                                 reconnect_tick.update(|n| *n = n.wrapping_add(1));
+                            } else {
+                                global_error_retry.set(None);
                             }
                         });
                     }) as Box<dyn Fn(JsValue)>);
@@ -830,6 +903,7 @@ pub fn App() -> impl IntoView {
     {
         let ws_kb = ws_senders.clone();
         let act_kb = active_session.clone();
+        let sd_kb = session_data.clone();
         let dm_kb = layout.dark_mode;
         let keydown = Closure::<dyn Fn(web_sys::KeyboardEvent)>::new(move |e: web_sys::KeyboardEvent| {
             // Don't intercept when focus is in an input/textarea
@@ -840,11 +914,13 @@ pub fn App() -> impl IntoView {
                 { return; }
             }
             let sid = act_kb.get_untracked().unwrap_or_else(|| "default".into());
+            let tid = sd_kb.get_untracked()
+                .get(&sid).map(|s| s.active_thread_id).unwrap_or(1);
             match (e.key().as_str(), e.shift_key()) {
                 ("F5",  false) => { e.prevent_default(); send_cmd(&ws_kb, &sid, "continue", serde_json::json!({})); }
-                ("F10", false) => { e.prevent_default(); send_cmd(&ws_kb, &sid, "next",     serde_json::json!({ "threadId": 1 })); }
-                ("F11", false) => { e.prevent_default(); send_cmd(&ws_kb, &sid, "stepIn",   serde_json::json!({ "threadId": 1 })); }
-                ("F11", true)  => { e.prevent_default(); send_cmd(&ws_kb, &sid, "stepOut",  serde_json::json!({ "threadId": 1 })); }
+                ("F10", false) => { e.prevent_default(); send_cmd(&ws_kb, &sid, "next",     serde_json::json!({ "threadId": tid })); }
+                ("F11", false) => { e.prevent_default(); send_cmd(&ws_kb, &sid, "stepIn",   serde_json::json!({ "threadId": tid })); }
+                ("F11", true)  => { e.prevent_default(); send_cmd(&ws_kb, &sid, "stepOut",  serde_json::json!({ "threadId": tid })); }
                 ("d",   false) if e.meta_key() || e.ctrl_key() => {
                     e.prevent_default();
                     dm_kb.update(|v| *v = !*v);
@@ -1011,6 +1087,7 @@ fn handle_envelope(
     let mut post_watch_eval: Option<(String, u32, Vec<String>)> = None; // (session_id, frameId, exprs)
     let mut post_session_ended: bool = false;
     let mut post_switch_to_session: Option<String> = None;
+    let log_max = use_context::<UiLimits>().map(|l| l.max_logs).unwrap_or(200);
     let id = envelope.session_id.clone();
 
     sessions.update(|s| { if !s.contains(&id) { s.push(id.clone()); } });
@@ -1047,17 +1124,17 @@ fn handle_envelope(
                             state.active_thread_id = tid as u32;
                         }
                         let reason = b.get("reason").and_then(Value::as_str).unwrap_or("breakpoint");
-                        push_log(state, "⏸", &format!("Paused ({})", reason), "log-event");
+                        push_log(state, "⏸", &format!("Paused ({})", reason), "log-event", log_max);
                     }
                     // Watch eval is deferred until stackTrace response (when frame_id is known)
                 }
                 "continued" => {
                     state.status = "running".into();
-                    push_log(state, "▶", "Running", "log-response");
+                    push_log(state, "▶", "Running", "log-response", log_max);
                 }
                 "terminated" | "exited" => {
                     state.status = "ended".into();
-                    push_log(state, "■", "Session ended", "log-error");
+                    push_log(state, "■", "Session ended", "log-error", log_max);
                     post_session_ended = true;
                 }
                 "output" => {
@@ -1066,7 +1143,7 @@ fn handle_envelope(
                         let cat = b.get("category").and_then(Value::as_str).unwrap_or("console");
                         if cat != "telemetry" && !out.is_empty() {
                             let (tag, class) = match cat { "stderr" => ("err", "log-error"), _ => ("out", "log-text") };
-                            push_log(state, tag, &out, class);
+                            push_log(state, tag, &out, class, log_max);
                         }
                     }
                 }
@@ -1076,7 +1153,7 @@ fn handle_envelope(
                         let cmd = b.get("command").and_then(Value::as_str).unwrap_or("?");
                         let origin = b.get("origin").and_then(Value::as_str).unwrap_or("ui");
                         let icon = if origin == "mcp" { "🤖" } else { "→" };
-                        push_log(state, icon, &format!("[{}] {}", origin.to_uppercase(), cmd), "log-response");
+                        push_log(state, icon, &format!("[{}] {}", origin.to_uppercase(), cmd), "log-response", log_max);
                     }
                 }
                 "sourceLoaded" => {
@@ -1115,16 +1192,16 @@ fn handle_envelope(
                         if !state.open_files.contains(&file) {
                             state.open_files.push(file.clone());
                         }
-                        push_log(state, "📌", &format!("BP: {}", basename(&file)), "log-response");
+                        push_log(state, "📌", &format!("BP: {}", basename(&file)), "log-response", log_max);
                     }
                 }
                 "exceptionInfo" => {
                     if let Some(b) = msg.get("body") {
                         let exc_id = b.get("exceptionId").and_then(Value::as_str).unwrap_or("Exception");
                         let desc = b.get("description").and_then(Value::as_str).unwrap_or("");
-                        push_log(state, "💥", &format!("{}: {}", exc_id, desc), "log-error");
+                        push_log(state, "💥", &format!("{}: {}", exc_id, desc), "log-error", log_max);
                         if let Some(stack) = b.get("details").and_then(|d| d.get("stackTrace")).and_then(Value::as_str) {
-                            push_log(state, "  ", stack, "log-error");
+                            push_log(state, "  ", stack, "log-error", log_max);
                         }
                     }
                 }
@@ -1159,7 +1236,7 @@ fn handle_envelope(
                 }
                 "invalidated" => {
                     // Adapter requests a data refresh — push a special log entry as a hint.
-                    push_log(state, "↺", "Debug data invalidated — refresh pending", "log-response");
+                    push_log(state, "↺", "Debug data invalidated — refresh pending", "log-response", log_max);
                 }
                 "llmQuery" => {
                     if let Some(b) = msg.get("body") {
@@ -1170,7 +1247,7 @@ fn handle_envelope(
                         } else {
                             format!("[LLM] {tool}({detail})")
                         };
-                        push_log(state, "🔍", &label, "log-llm-query");
+                        push_log(state, "🔍", &label, "log-llm-query", log_max);
                         state.last_llm_query = if detail.is_empty() {
                             format!("🔍 {tool}")
                         } else {
@@ -1187,7 +1264,7 @@ fn handle_envelope(
                             message: b.get("message").and_then(Value::as_str).unwrap_or("").to_string(),
                             color: b.get("color").and_then(Value::as_str).unwrap_or("blue").to_string(),
                         };
-                        push_log(state, "📎", &format!("{}:{} {}", basename(&entry.file), entry.line, entry.message), "log-response");
+                        push_log(state, "📎", &format!("{}:{} {}", basename(&entry.file), entry.line, entry.message), "log-response", log_max);
                         state.annotations.push(entry);
                     }
                 }
@@ -1200,7 +1277,7 @@ fn handle_envelope(
                             timestamp: b.get("timestamp").and_then(Value::as_str).unwrap_or("").to_string(),
                         };
                         let icon = match entry.level.as_str() { "error" => "🔴", "warning" => "🟡", _ => "🔵" };
-                        push_log(state, icon, &entry.message, "log-response");
+                        push_log(state, icon, &entry.message, "log-response", log_max);
                         state.findings.push(entry);
                     }
                 }
@@ -1219,7 +1296,8 @@ fn handle_envelope(
                                 .unwrap_or_default(),
                         };
                         state.timeline.push(entry);
-                        if state.timeline.len() > 500 { state.timeline.remove(0); }
+                        let max_tl = use_context::<UiLimits>().map(|l| l.max_timeline).unwrap_or(500);
+                        if state.timeline.len() > max_tl { state.timeline.remove(0); }
                     }
                 }
                 "watches_updated" => {
@@ -1266,7 +1344,7 @@ fn handle_envelope(
                     let cmd = msg.get("command").and_then(Value::as_str).unwrap_or("unknown");
                     let err = msg.get("message").and_then(Value::as_str).unwrap_or("command failed");
                     global_error.set(Some(format!("{cmd}: {err}")));
-                    push_log(state, "✗", &format!("{cmd} failed: {err}"), "log-error");
+                    push_log(state, "✗", &format!("{cmd} failed: {err}"), "log-error", log_max);
                     return;
                 }
                 let cmd = msg.get("command").and_then(Value::as_str).unwrap_or("");
@@ -1413,7 +1491,7 @@ fn handle_envelope(
                                 None => state.watch_results.push((expr_s, result_s)),
                             }
                         }
-                        push_log(state, "=", &format!("{}{}", if expr.is_empty() { String::new() } else { format!("{} = ", expr) }, result), "log-response");
+                        push_log(state, "=", &format!("{}{}", if expr.is_empty() { String::new() } else { format!("{} = ", expr) }, result), "log-response", log_max);
                     }
                 }
                 if cmd == "completions" {
@@ -1426,7 +1504,7 @@ fn handle_envelope(
                 if cmd == "setVariable" {
                     if let Some(b) = msg.get("body") {
                         let new_val = b.get("value").and_then(Value::as_str).unwrap_or("?");
-                        push_log(state, "✏", &format!("= {}", new_val), "log-response");
+                        push_log(state, "✏", &format!("= {}", new_val), "log-response", log_max);
                         // Update the variable value in the flat list
                         // (We don't have the name here, so just log it; full sync on next stop)
                     }
@@ -1477,13 +1555,12 @@ fn handle_envelope(
     let _ = post_session_ended;
 }
 
-fn push_log(state: &mut SessionState, tag: &str, msg: &str, class: &str) {
+fn push_log(state: &mut SessionState, tag: &str, msg: &str, class: &str, max: usize) {
     let seq = state.event_seq;
     state.console_logs.push(ConsoleLog {
         tag: tag.into(), message: msg.into(), class: class.into(), seq,
     });
-    // Keep last 200 entries
-    if state.console_logs.len() > 200 {
+    if state.console_logs.len() > max {
         state.console_logs.remove(0);
     }
 }
@@ -1750,7 +1827,7 @@ fn SessionsPanel(
     show_launch_modal: RwSignal<bool>,
 ) -> impl IntoView {
     view! {
-        <aside class="sidebar sidebar-left">
+        <div class="sessions-panel-shell">
             <div class="panel" style="flex:1;overflow:hidden">
                 <div class="panel-header">
                     <h2>"Sessions"</h2>
@@ -1822,16 +1899,21 @@ fn SessionsPanel(
                                         >
                                             <span class="session-item">
                                                 {id.clone()}
-                                                <SessionDot session_id=id.clone() session_ended=is_ended />
                                             </span>
-                                            <Show when=move || program_label.get().is_some()>
-                                                <div class="session-details">
-                                                    <small class="session-program">{move || program_label.get().unwrap_or_default()}</small>
-                                                    <Show when=move || adapter_label.get().is_some()>
-                                                        <span class="session-adapter-pill">{move || adapter_label.get().unwrap_or_default()}</span>
+                                            {
+                                                let id_dot = id.clone();
+                                                view! {
+                                                    <Show when=move || program_label.get().is_some()>
+                                                        <div class="session-details">
+                                                            <small class="session-program">{move || program_label.get().unwrap_or_default()}</small>
+                                                            <Show when=move || adapter_label.get().is_some()>
+                                                                <span class="session-adapter-pill">{move || adapter_label.get().unwrap_or_default()}</span>
+                                                            </Show>
+                                                            <SessionDot session_id=id_dot.clone() session_ended=is_ended />
+                                                        </div>
                                                     </Show>
-                                                </div>
-                                            </Show>
+                                                }
+                                            }
                                         </li>
                                     }
                                 }
@@ -1843,7 +1925,7 @@ fn SessionsPanel(
                     </ul>
                 </div>
             </div>
-        </aside>
+        </div>
     }
 }
 
@@ -2101,9 +2183,14 @@ fn SourcePanel(
             .unwrap_or_default()
     };
 
+    let show_open_input = RwSignal::new(false);
+    let open_path_value = RwSignal::new(String::new());
+
     let show_source_onboarding = move || {
         match active_session.get() {
-            None => true,
+            // When there are no sessions, the top "Getting Started" card already guides the user.
+            // Avoid showing a second onboarding block in Source, which makes the layout feel crowded.
+            None => false,
             Some(id) => session_data
                 .get()
                 .get(&id)
@@ -2221,7 +2308,50 @@ fn SourcePanel(
                         }
                     }
                 />
-                <Show when=move || open_files().is_empty()>
+                <Show when=move || !show_open_input.get()>
+                    <button
+                        class="tab-add-btn"
+                        title="Open file by path"
+                        on:click=move |_| { show_open_input.set(true); open_path_value.set(String::new()); }
+                    >"+"</button>
+                </Show>
+                <Show when=move || show_open_input.get()>
+                    <input
+                        class="tab-path-input"
+                        type="text"
+                        placeholder="/path/to/file..."
+                        prop:value=move || open_path_value.get()
+                        on:input=move |ev| {
+                            use wasm_bindgen::JsCast;
+                            let val = ev.target().unwrap().unchecked_into::<web_sys::HtmlInputElement>().value();
+                            open_path_value.set(val);
+                        }
+                        on:keydown=move |ev: web_sys::KeyboardEvent| {
+                            match ev.key().as_str() {
+                                "Enter" => {
+                                    let path = open_path_value.get_untracked();
+                                    if !path.is_empty() {
+                                        if let Some(sid) = active_session.get_untracked() {
+                                            session_data.update(|map| {
+                                                if let Some(s) = map.get_mut(&sid) {
+                                                    if !s.open_files.contains(&path) {
+                                                        s.open_files.push(path.clone());
+                                                    }
+                                                }
+                                            });
+                                            active_tab.set(Some(path));
+                                        }
+                                    }
+                                    show_open_input.set(false);
+                                }
+                                "Escape" => { show_open_input.set(false); }
+                                _ => {}
+                            }
+                        }
+                        on:blur=move |_| { show_open_input.set(false); }
+                    />
+                </Show>
+                <Show when=move || open_files().is_empty() && !show_open_input.get()>
                     <span class="tab-empty">"No files open"</span>
                 </Show>
             </div>
@@ -2727,7 +2857,8 @@ fn ConsolePanel(
             command_history.update(|h| {
                 if h.last().map(|v| v != &expr).unwrap_or(true) {
                     h.push(expr.clone());
-                    if h.len() > 50 { h.remove(0); }
+                    let max_h = use_context::<UiLimits>().map(|l| l.max_history).unwrap_or(50);
+                    if h.len() > max_h { h.remove(0); }
                 }
             });
             history_index.set(None);

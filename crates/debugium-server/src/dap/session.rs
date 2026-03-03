@@ -113,6 +113,9 @@ pub struct Session {
     pub watches: RwLock<Vec<String>>,
     /// Last evaluated results for each watch.
     pub watch_results: RwLock<Vec<WatchResult>>,
+    /// Fires when the session terminates (exited/terminated DAP event).
+    /// Listeners can clean up (e.g. remove from registry).
+    pub terminated_tx: Arc<tokio::sync::watch::Sender<bool>>,
 }
 
 impl Session {
@@ -168,6 +171,8 @@ impl Session {
         let (stopped_tx, _) = tokio::sync::watch::channel(0u32);
         let stopped_tx = Arc::new(stopped_tx);
         let last_stopped_arc: Arc<RwLock<Option<Value>>> = Arc::new(RwLock::new(None));
+        let (terminated_tx, _) = tokio::sync::watch::channel(false);
+        let terminated_tx = Arc::new(terminated_tx);
 
         let session = Arc::new(Session {
             id: id.clone(),
@@ -188,6 +193,7 @@ impl Session {
             timeline: RwLock::new(VecDeque::new()),
             watches: RwLock::new(Vec::new()),
             watch_results: RwLock::new(Vec::new()),
+            terminated_tx: terminated_tx.clone(),
         });
 
         // Spawn event dispatcher: handles initialized signal + enriches stopped events
@@ -197,6 +203,7 @@ impl Session {
             let session_id = id.clone();
             let stopped_tx2 = stopped_tx.clone();
             let last_stopped2 = last_stopped_arc.clone();
+            let terminated_tx = terminated_tx.clone();
             let mut event_rx = event_rx;
             let mut init_tx_opt = Some(init_tx);
             // js-debug TCP port — needed to open child sessions for startDebugging
@@ -305,6 +312,11 @@ impl Session {
 
                     broadcast_json(&hub2, &session_id, event.clone()).await;
 
+                    // Signal termination so registry cleanup can fire
+                    if ev_name == "terminated" || ev_name == "exited" {
+                        let _ = terminated_tx.send(true);
+                    }
+
                     // Capture output events into the rolling console_lines buffer
                     if ev_name == "output" {
                         if let Some(output) = event.get("body").and_then(|b| b.get("output")).and_then(Value::as_str) {
@@ -378,6 +390,8 @@ impl Session {
         let (stopped_tx, _) = tokio::sync::watch::channel(0u32);
         let stopped_tx = Arc::new(stopped_tx);
         let last_stopped_arc: Arc<RwLock<Option<Value>>> = Arc::new(RwLock::new(None));
+        let (terminated_tx, _) = tokio::sync::watch::channel(false);
+        let terminated_tx = Arc::new(terminated_tx);
 
         let session = Arc::new(Session {
             id: id.clone(),
@@ -398,6 +412,7 @@ impl Session {
             timeline: RwLock::new(VecDeque::new()),
             watches: RwLock::new(Vec::new()),
             watch_results: RwLock::new(Vec::new()),
+            terminated_tx: terminated_tx.clone(),
         });
 
         // Event dispatcher
@@ -407,6 +422,7 @@ impl Session {
             let session_id = id.clone();
             let stopped_tx2 = stopped_tx.clone();
             let last_stopped2 = last_stopped_arc.clone();
+            let terminated_tx = terminated_tx.clone();
             let mut event_rx = event_rx;
             let mut init_tx_opt = Some(init_tx);
             let session2 = session.clone();
@@ -418,7 +434,13 @@ impl Session {
                         if let Some(tx) = init_tx_opt.take() { let _ = tx.send(()); }
                         continue;
                     }
+                    let ev_name = event.get("event").and_then(Value::as_str).unwrap_or("?");
                     broadcast_json(&hub2, &session_id, event.clone()).await;
+
+                    // Signal termination so registry cleanup can fire
+                    if ev_name == "terminated" || ev_name == "exited" {
+                        let _ = terminated_tx.send(true);
+                    }
                     if event.get("event").and_then(Value::as_str) == Some("stopped") {
                         *last_stopped2.write().await = Some(event.clone());
                         stopped_tx2.send_modify(|n| *n = n.wrapping_add(1));

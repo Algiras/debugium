@@ -52,14 +52,8 @@ fn get_field<'a>(v: &'a Value, camel: &str, snake: &str) -> Option<&'a Value> {
 }
 
 impl DapConfig {
-    /// Load from a JSON file path.
-    pub fn load(path: &Path) -> Result<Self> {
-        let raw = std::fs::read_to_string(path)
-            .map_err(|e| anyhow::anyhow!("cannot read dap.json at {}: {e}", path.display()))?;
-        let v: Value = serde_json::from_str(&raw)
-            .map_err(|e| anyhow::anyhow!("invalid dap.json: {e}"))?;
-
-        // command is now optional (not needed for remote attach)
+    /// Load a single adapter config from a JSON object value.
+    pub fn from_value(v: &Value) -> Result<Self> {
         let command: Option<Vec<String>> = v.get("command")
             .and_then(Value::as_array)
             .map(|arr| arr.iter().filter_map(|s| s.as_str().map(str::to_string)).collect());
@@ -134,6 +128,15 @@ impl DapConfig {
         })
     }
 
+    /// Load from a JSON file path (single-object format).
+    pub fn load(path: &Path) -> Result<Self> {
+        let raw = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("cannot read dap.json at {}: {e}", path.display()))?;
+        let v: Value = serde_json::from_str(&raw)
+            .map_err(|e| anyhow::anyhow!("invalid dap.json: {e}"))?;
+        Self::from_value(&v)
+    }
+
     /// Whether this config uses remote TCP attach (host+port, no local spawn).
     pub fn is_remote_attach(&self) -> bool {
         self.host.is_some() && self.port.is_some()
@@ -142,6 +145,72 @@ impl DapConfig {
     /// TCP host for remote attach, defaults to 127.0.0.1.
     pub fn tcp_host(&self) -> &str {
         self.host.as_deref().unwrap_or("127.0.0.1")
+    }
+}
+
+/// Multiple adapter configs from a single dap.json (array format).
+/// Each entry has a `files` glob list for auto-matching by program path.
+pub struct DapMultiConfig {
+    pub entries: Vec<(Vec<String>, DapConfig)>,
+}
+
+impl DapMultiConfig {
+    /// Load from a JSON file. Accepts both array (multi) and object (single) formats.
+    /// Returns Err only on I/O or parse failure; returns Ok(None) for single-object files.
+    pub fn load(path: &Path) -> Result<Option<Self>> {
+        let raw = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("cannot read dap.json at {}: {e}", path.display()))?;
+        let v: Value = serde_json::from_str(&raw)
+            .map_err(|e| anyhow::anyhow!("invalid dap.json: {e}"))?;
+
+        let arr = match v.as_array() {
+            Some(a) => a,
+            None => return Ok(None), // single-object format
+        };
+
+        let mut entries = Vec::new();
+        for item in arr {
+            let globs: Vec<String> = item.get("files")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            let cfg = DapConfig::from_value(item)?;
+            entries.push((globs, cfg));
+        }
+        Ok(Some(Self { entries }))
+    }
+
+    /// Find the first config whose `files` globs match the given program filename.
+    pub fn match_program(&self, program: &Path) -> Option<&DapConfig> {
+        let filename = program.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        for (globs, cfg) in &self.entries {
+            for pattern in globs {
+                if let Ok(g) = glob::Pattern::new(pattern) {
+                    if g.matches(filename) {
+                        return Some(cfg);
+                    }
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Infer an AdapterKind from the program file extension alone (no config file).
+pub fn adapter_kind_from_extension(program: &Path) -> Option<AdapterKind> {
+    let ext = program.extension().and_then(|e| e.to_str())?;
+    match ext {
+        "py" => Some(AdapterKind::Python),
+        "js" | "mjs" | "cjs" => Some(AdapterKind::NodeJs),
+        "ts" | "tsx" => Some(AdapterKind::TypeScript),
+        "rs" => Some(AdapterKind::CodeLldb),
+        "c" | "cpp" | "cc" | "cxx" => Some(AdapterKind::CodeLldb),
+        "java" => Some(AdapterKind::Java),
+        "scala" | "sc" => Some(AdapterKind::Metals { port: 5005 }),
+        "wasm" => Some(AdapterKind::Wasm),
+        _ => None,
     }
 }
 

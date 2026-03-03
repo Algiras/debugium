@@ -1,5 +1,5 @@
 #![recursion_limit = "256"]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -12,7 +12,7 @@ mod home;
 mod mcp;
 mod server;
 
-use dap::adapter::{Adapter, AdapterKind};
+use dap::adapter::{Adapter, AdapterKind, DapMultiConfig, adapter_kind_from_extension};
 use dap::session::{Session, SessionRegistry};
 use home::DebugiumHome;
 use server::hub::Hub;
@@ -282,14 +282,20 @@ async fn main() -> Result<()> {
             let hub = Hub::new();
             let registry = SessionRegistry::new();
 
-            // Resolve adapter kind: --config > --adapter > auto-discovery > default
+            // Resolve adapter kind:
+            //   --config > explicit --adapter > auto-discover multi-config > extension fallback > explicit default
             let kind = if let Some(ref cfg_path) = config {
                 AdapterKind::from_str(cfg_path.to_str().unwrap_or("dap.json"))
-            } else if adapter == "python" {
-                // Default value — try auto-discovery before falling back
-                auto_discover_adapter().unwrap_or_else(|| AdapterKind::from_str(&adapter))
-            } else {
+            } else if adapter != "python" {
+                // User explicitly chose an adapter
                 AdapterKind::from_str(&adapter)
+            } else {
+                // Default value — try auto-discovery (multi-config or single), then extension, then python
+                auto_discover_adapter_for(&program)
+                    .unwrap_or_else(|| {
+                        adapter_kind_from_extension(&program)
+                            .unwrap_or_else(|| AdapterKind::from_str(&adapter))
+                    })
             };
             let cwd = std::env::current_dir()?;
 
@@ -325,6 +331,23 @@ async fn main() -> Result<()> {
                     .map_err(|e| { tracing::error!("Failed to create session: {e}"); e })?
             };
             registry.insert(session.clone()).await;
+
+            // Auto-remove session from registry after termination (5s delay)
+            {
+                let reg = registry.clone();
+                let sid = session.id.clone();
+                let mut term_rx = session.terminated_tx.subscribe();
+                tokio::spawn(async move {
+                    while term_rx.changed().await.is_ok() {
+                        if *term_rx.borrow() {
+                            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                            tracing::info!("[{sid}] auto-removing terminated session");
+                            reg.remove(&sid).await;
+                            break;
+                        }
+                    }
+                });
+            }
 
             // Parse CLI breakpoints and merge with dap.json breakpoints
             let mut breakpoints = parse_breakpoints(&breakpoint);
@@ -474,14 +497,26 @@ async fn main() -> Result<()> {
 }
 
 /// Auto-discover a dap.json config file in cwd or .debugium/ directory.
-fn auto_discover_adapter() -> Option<AdapterKind> {
+/// Supports both multi-config (array) and single-config (object) formats.
+fn auto_discover_adapter_for(program: &Path) -> Option<AdapterKind> {
     let candidates = ["dap.json", ".debugium/dap.json"];
     for c in &candidates {
         let path = PathBuf::from(c);
-        if path.exists() {
-            eprintln!("[Debugium] Auto-discovered config: {c}");
-            return Some(AdapterKind::from_str(c));
+        if !path.exists() { continue; }
+        eprintln!("[Debugium] Auto-discovered config: {c}");
+
+        // Try multi-config first (array format with files globs)
+        if let Ok(Some(multi)) = DapMultiConfig::load(&path) {
+            if let Some(cfg) = multi.match_program(program) {
+                eprintln!("[Debugium] Matched adapter '{}' for {}", cfg.name.as_deref().unwrap_or("?"), program.display());
+                return Some(AdapterKind::DapConfig(cfg.clone()));
+            }
+            eprintln!("[Debugium] No matching adapter in multi-config for {}", program.display());
+            continue;
         }
+
+        // Single-config format
+        return Some(AdapterKind::from_str(c));
     }
     None
 }
