@@ -167,6 +167,8 @@ remove_watch(expression)
 | What files are loaded? | `loaded_sources` |
 | What can I step into? | `step_in_targets(frame_id)` |
 | Fetch generated/internal source? | `source_by_reference(source_reference)` |
+| Jump to line (skip code)? | `goto_targets(file, line)` → `goto(thread_id, target_id)` |
+| Cancel hung request? | `cancel_request(request_id)` |
 
 ---
 
@@ -220,6 +222,11 @@ breakpoint_locations(file, line, end_line?)   (requires supportsBreakpointLocati
 step_in_targets(frame_id)                     (requires supportsStepInTargetsRequest)
 loaded_sources                                (requires supportsLoadedSourcesRequest)
 source_by_reference(source_reference)         (fetch code by sourceReference for generated/internal code)
+
+# Navigation
+goto_targets(file, line)                      (requires supportsGotoTargetsRequest)
+goto(thread_id, target_id)                    (jump execution — skip code, don't run it)
+cancel_request(request_id)                    (requires supportsCancelRequest — abort hung requests)
 
 # Output
 wait_for_output(pattern, from_line=0, timeout_secs=10)
