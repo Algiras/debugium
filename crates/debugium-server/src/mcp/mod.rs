@@ -321,6 +321,18 @@ fn tool_list() -> Value {
                 }
             },
             {
+                "name": "explain_exception",
+                "description": "When stopped on an exception, gather all relevant context in one call: exception info, paused location, locals, call stack, recent console output, source window, and recent timeline. Returns a structured diagnosis. Use this instead of calling get_exception_info + get_debug_context + get_console_output separately.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string" },
+                        "thread_id": { "type": "integer", "description": "Thread to inspect. Auto-detected if omitted." }
+                    },
+                    "required": []
+                }
+            },
+            {
                 "name": "disconnect",
                 "description": "Terminate the debug session and the target process.",
                 "inputSchema": {
@@ -1646,6 +1658,121 @@ pub async fn dispatch_tool(
                         f.get("line").and_then(Value::as_u64).unwrap_or(0),
                         f.get("name").and_then(Value::as_str).unwrap_or("?"))
                 }).collect::<Vec<_>>(),
+            }))?)
+        }
+
+        "explain_exception" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
+            let thread_id = if let Some(t) = args.get("thread_id").and_then(Value::as_u64) {
+                t as u32
+            } else {
+                paused_thread_id(&s).await
+            };
+
+            // 1. Exception info
+            let exc_info = s.client.request("exceptionInfo",
+                Some(json!({ "threadId": thread_id }))).await
+                .ok().and_then(|r| r.get("body").cloned()).unwrap_or(json!(null));
+
+            // 2. Stack trace
+            let stack_resp = s.client.request("stackTrace",
+                Some(json!({ "threadId": thread_id, "startFrame": 0, "levels": 20 }))).await?;
+            let frames = stack_resp.get("body").and_then(|b| b.get("stackFrames"))
+                .and_then(Value::as_array).cloned().unwrap_or_default();
+            let top = frames.first();
+            let frame_id = top.and_then(|f| f.get("id")).and_then(Value::as_u64).unwrap_or(1) as u32;
+            let file = top.and_then(|f| f.get("source")).and_then(|s| s.get("path"))
+                .and_then(Value::as_str).unwrap_or("?").to_string();
+            let line = top.and_then(|f| f.get("line")).and_then(Value::as_u64).unwrap_or(0) as u32;
+            let func = top.and_then(|f| f.get("name")).and_then(Value::as_str).unwrap_or("?").to_string();
+            let call_stack: Vec<String> = frames.iter().map(|f| {
+                format!("{}:{} in {}()",
+                    f.get("source").and_then(|s| s.get("path")).and_then(Value::as_str)
+                        .map(|p| p.split('/').last().unwrap_or(p)).unwrap_or("?"),
+                    f.get("line").and_then(Value::as_u64).unwrap_or(0),
+                    f.get("name").and_then(Value::as_str).unwrap_or("?"))
+            }).collect();
+
+            // 3. Locals
+            let mut locals = serde_json::Map::new();
+            if let Ok(scopes_resp) = s.client.request("scopes", Some(json!({ "frameId": frame_id }))).await {
+                let scopes = scopes_resp.get("body").and_then(|b| b.get("scopes"))
+                    .and_then(Value::as_array).cloned().unwrap_or_default();
+                let locals_scope = scopes.iter().find(|sc| {
+                    sc.get("name").and_then(Value::as_str)
+                        .map(|n| n.to_lowercase().contains("local") || n.to_lowercase().contains("function"))
+                        .unwrap_or(false)
+                }).or_else(|| scopes.first());
+                if let Some(sc) = locals_scope {
+                    if let Some(vref) = sc.get("variablesReference").and_then(Value::as_u64) {
+                        if vref > 0 {
+                            if let Ok(vars_resp) = s.client.request("variables",
+                                Some(json!({ "variablesReference": vref }))).await {
+                                if let Some(vars) = vars_resp.get("body").and_then(|b| b.get("variables"))
+                                    .and_then(Value::as_array) {
+                                    for v in vars.iter().take(30) {
+                                        let name = v.get("name").and_then(Value::as_str).unwrap_or("?");
+                                        let val  = v.get("value").and_then(Value::as_str).unwrap_or("?");
+                                        let typ  = v.get("type").and_then(Value::as_str).unwrap_or("");
+                                        let entry = if typ.is_empty() { val.to_string() }
+                                                    else { format!("{val} ({typ})") };
+                                        locals.insert(name.to_string(), json!(entry));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 4. Recent console output (last 20 lines)
+            let recent_output: Vec<String> = {
+                let buf = s.console_lines.read().await;
+                buf.iter().rev().take(20).cloned().collect::<Vec<_>>().into_iter().rev().collect()
+            };
+
+            // 5. Source window ±10 lines
+            let source_window = if let Ok(content) = tokio::fs::read_to_string(&file).await {
+                let lines: Vec<&str> = content.lines().collect();
+                let ctx = 10usize;
+                let start = (line as usize).saturating_sub(ctx + 1);
+                let end = ((line as usize) + ctx).min(lines.len());
+                lines[start..end].iter().enumerate()
+                    .map(|(i, l)| {
+                        let n = start + i + 1;
+                        let marker = if n == line as usize { "→" } else { " " };
+                        format!("{marker} {:4}: {l}", n)
+                    })
+                    .collect::<Vec<_>>().join("\n")
+            } else { String::new() };
+
+            // 6. Recent timeline (last 5 stops)
+            let recent_timeline: Vec<Value> = {
+                let tl = s.timeline.read().await;
+                tl.iter().rev().take(5).map(|entry| {
+                    json!({
+                        "stop_id": entry.id,
+                        "file": entry.file.split('/').last().unwrap_or(&entry.file),
+                        "line": entry.line,
+                        "changed_vars": entry.changed_vars,
+                    })
+                }).collect::<Vec<_>>().into_iter().rev().collect()
+            };
+
+            Ok(serde_json::to_string_pretty(&json!({
+                "exception": exc_info,
+                "paused_at": format!("{}:{} in {}()",
+                    file.split('/').last().unwrap_or(&file), line, func),
+                "file": file,
+                "line": line,
+                "function": func,
+                "frame_id": frame_id,
+                "thread_id": thread_id,
+                "locals": locals,
+                "call_stack": call_stack,
+                "source_window": source_window,
+                "recent_output": recent_output,
+                "recent_timeline": recent_timeline,
             }))?)
         }
 

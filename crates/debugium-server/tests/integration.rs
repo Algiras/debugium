@@ -1686,3 +1686,57 @@ fn x3_continue_until_timeout_returns_message() {
     assert!(text.contains("Timed out") || text.contains("Stopped at"),
         "expected timeout or stop message: {text}");
 }
+
+// ─── Y. explain_exception compound tool ───────────────────────────────────────
+
+#[test]
+fn y1_explain_exception_tool_listed() {
+    let mut p = McpProc::start(7331);
+    p.initialize();
+    let r = p.send("tools/list", Some(serde_json::json!({})));
+    p.stop();
+    let tools_json = serde_json::to_string(&r).unwrap();
+    assert!(tools_json.contains("explain_exception"), "explain_exception not in tools/list");
+}
+
+#[test]
+fn y2_explain_exception_returns_structured_context() {
+    require_debugpy!();
+    let tmp = std::env::temp_dir().join("debugium_explain_exc.py");
+    std::fs::write(&tmp, "import time\ntime.sleep(0.2)\nraise ValueError('test error')\n")
+        .unwrap();
+
+    let mut child = Command::new(debugium_bin())
+        .args([
+            "launch",
+            tmp.to_str().unwrap(),
+            "--adapter", "python",
+            "--port", "7431",
+            "--no-open-browser",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+
+    let ok = wait_server(7431, 12);
+    if ok {
+        std::thread::sleep(Duration::from_millis(500));
+        let mut p = McpProc::start(7431);
+        p.initialize();
+        p.tool_call("run_until_exception", serde_json::json!({}));
+        let r = p.tool_call("explain_exception", serde_json::json!({}));
+        p.stop();
+        let text = McpProc::text(&r);
+        assert!(r.get("error").is_none(), "Y2 error: {r}");
+        assert!(text.contains("\"exception\""), "expected exception field: {text}");
+        assert!(text.contains("\"call_stack\""), "expected call_stack field: {text}");
+        assert!(text.contains("\"locals\""), "expected locals field: {text}");
+        assert!(text.contains("\"source_window\""), "expected source_window field: {text}");
+        assert!(text.contains("\"recent_output\""), "expected recent_output field: {text}");
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_file(&tmp);
+}
