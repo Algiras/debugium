@@ -60,9 +60,23 @@ impl RpcResponse {
 
 // ─── Tool definitions ────────────────────────────────────────────────────────
 
-fn tool_list() -> Value {
-    json!({
-        "tools": [
+/// Maps tool names to the DAP capability they require.
+/// Tools not in this list are always included.
+const CAPABILITY_GATED_TOOLS: &[(&str, &str)] = &[
+    ("read_memory",              "supportsReadMemoryRequest"),
+    ("write_memory",             "supportsWriteMemoryRequest"),
+    ("disassemble",              "supportsDisassembleRequest"),
+    ("set_function_breakpoints", "supportsFunctionBreakpoints"),
+    ("set_variable",             "supportsSetVariable"),
+    ("restart",                  "supportsRestartRequest"),
+    ("terminate",                "supportsTerminateRequest"),
+    ("get_exception_info",       "supportsExceptionInfoRequest"),
+];
+
+fn tool_list(adapter_caps: &Value) -> Value {
+    let has_session = adapter_caps.is_object() && !adapter_caps.as_object().unwrap().is_empty();
+
+    let all_tools = json!([
             {
                 "name": "get_sessions",
                 "description": "List all active debug sessions.",
@@ -660,8 +674,23 @@ fn tool_list() -> Value {
                     }
                 }
             }
-        ]
-    })
+    ]);
+
+    if !has_session {
+        return json!({ "tools": all_tools });
+    }
+
+    let filtered: Vec<Value> = all_tools.as_array().unwrap().iter().filter(|tool| {
+        let name = tool.get("name").and_then(Value::as_str).unwrap_or("");
+        for &(gated_name, cap_key) in CAPABILITY_GATED_TOOLS {
+            if name == gated_name {
+                return adapter_caps.get(cap_key).and_then(Value::as_bool).unwrap_or(false);
+            }
+        }
+        true
+    }).cloned().collect();
+
+    json!({ "tools": filtered })
 }
 
 // ─── Client capability tracking ──────────────────────────────────────────────
@@ -924,8 +953,24 @@ async fn handle_request(
         }
         "ping" => RpcResponse::ok(id, json!({})),
 
-        // Tool discovery
-        "tools/list" => RpcResponse::ok(id, tool_list()),
+        // Tool discovery — filter by adapter capabilities when a session exists
+        "tools/list" => {
+            let adapter_caps = if let Some(port) = proxy_port {
+                // Proxy mode: ask the running server for capabilities
+                match proxy_tool_via_http(port, "get_capabilities", json!({})).await {
+                    Ok(text) => serde_json::from_str::<Value>(&text).unwrap_or(json!({})),
+                    Err(_) => json!({}),
+                }
+            } else {
+                let ids = registry.list().await;
+                if let Some(sid) = ids.first() {
+                    if let Some(s) = registry.get(sid).await {
+                        s.get_capabilities().await
+                    } else { json!({}) }
+                } else { json!({}) }
+            };
+            RpcResponse::ok(id, tool_list(&adapter_caps))
+        }
 
         // Tool invocation
         "tools/call" => {

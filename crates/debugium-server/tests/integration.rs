@@ -1550,7 +1550,7 @@ fn w1_memory_tools_listed() {
 }
 
 #[test]
-fn w2_read_memory_returns_unsupported_for_python() {
+fn w2_memory_tools_hidden_for_python() {
     require_debugpy!();
     let srv = ServerGuard::launch(7425, Some(43), None);
     assert!(srv.wait_up(12), "W2 server never started");
@@ -1558,18 +1558,17 @@ fn w2_read_memory_returns_unsupported_for_python() {
 
     let mut p = McpProc::start(7425);
     p.initialize();
-    let r = p.tool_call("read_memory", serde_json::json!({
-        "memory_reference": "0x1000"
-    }));
+    let r = p.send("tools/list", Some(serde_json::json!({})));
     p.stop();
 
-    let text = McpProc::text(&r);
-    assert!(r.get("error").is_none(), "W2 unexpected RPC error: {r}");
-    assert!(text.contains("does not support"), "expected unsupported message for Python: {text}");
+    let tools_json = serde_json::to_string(&r).unwrap();
+    assert!(!tools_json.contains("\"read_memory\""), "read_memory should be hidden for Python adapter: {tools_json}");
+    assert!(!tools_json.contains("\"write_memory\""), "write_memory should be hidden for Python adapter: {tools_json}");
+    assert!(!tools_json.contains("\"disassemble\""), "disassemble should be hidden for Python adapter: {tools_json}");
 }
 
 #[test]
-fn w3_disassemble_returns_unsupported_for_python() {
+fn w3_python_still_shows_supported_tools() {
     require_debugpy!();
     let srv = ServerGuard::launch(7427, Some(43), None);
     assert!(srv.wait_up(12), "W3 server never started");
@@ -1577,12 +1576,14 @@ fn w3_disassemble_returns_unsupported_for_python() {
 
     let mut p = McpProc::start(7427);
     p.initialize();
-    let r = p.tool_call("disassemble", serde_json::json!({
-        "memory_reference": "0x1000"
-    }));
+    let r = p.send("tools/list", Some(serde_json::json!({})));
     p.stop();
 
-    let text = McpProc::text(&r);
-    assert!(r.get("error").is_none(), "W3 unexpected RPC error: {r}");
-    assert!(text.contains("does not support"), "expected unsupported message for Python: {text}");
+    let tools_json = serde_json::to_string(&r).unwrap();
+    // These universal tools should always be present
+    assert!(tools_json.contains("\"get_debug_context\""), "get_debug_context missing");
+    assert!(tools_json.contains("\"step_over\""), "step_over missing");
+    assert!(tools_json.contains("\"set_breakpoints\""), "set_breakpoints missing");
+    // Python supports exception info
+    assert!(tools_json.contains("\"get_exception_info\""), "get_exception_info should be available for Python");
 }
