@@ -630,6 +630,20 @@ header {
     text-transform: uppercase;
 }
 
+/* ─── Thread selector ────────────────────────────── */
+.thread-selector {
+    font-size: 10px;
+    padding: 1px 4px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-input, var(--bg-secondary));
+    color: var(--text-primary);
+    max-width: 140px;
+    margin-left: 4px;
+    outline: none;
+}
+.thread-selector:focus { border-color: var(--accent); }
+
 /* ─── Stack Frames ───────────────────────────────── */
 .frame-active {
     background: rgba(9, 71, 113, .25) !important;
@@ -730,6 +744,10 @@ header {
 .var-child {
     padding-left: 24px !important;
     background: rgba(255,255,255,.02);
+}
+.var-grandchild {
+    padding-left: 42px !important;
+    background: rgba(255,255,255,.01);
 }
 
 .var-indent {
@@ -918,6 +936,21 @@ header {
     gap: 6px;
     margin-top: 4px;
 }
+
+.bp-run-to-cursor {
+    width: 100%;
+    padding: 4px 0;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius);
+    cursor: pointer;
+    font-size: 10px;
+    background: rgba(var(--accent-rgb, 88,166,255), .12);
+    color: var(--accent);
+    transition: all .1s;
+    font-weight: 600;
+    margin-bottom: 2px;
+}
+.bp-run-to-cursor:hover { background: rgba(var(--accent-rgb, 88,166,255), .25); }
 
 .bp-save, .bp-cancel {
     flex: 1;
@@ -1861,7 +1894,12 @@ li.session-ended .session-item {
     animation: flash-yellow .65s ease-out both;
 }
 .bp-dot { color: var(--accent-red); font-size: 9px; }
+.bp-dot.bp-logpoint { color: #ffa500; }
 .bp-line-num { color: var(--text-secondary); }
+.bp-log-msg { color: var(--text-dim); font-style: italic; font-size: 10px; margin-left: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 120px; }
+.bp-remove-btn { margin-left: auto; color: var(--text-dim); font-size: 9px; cursor: pointer; opacity: 0; transition: opacity .15s; padding: 0 4px; }
+.bp-line-item:hover .bp-remove-btn { opacity: 1; }
+.bp-remove-btn:hover { color: var(--accent-red); }
 
 /* ─── Findings panel (center area, full width) ── */
 .findings-panel {

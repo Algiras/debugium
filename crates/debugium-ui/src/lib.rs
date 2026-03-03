@@ -1180,16 +1180,25 @@ fn handle_envelope(
                 "breakpoints_changed" => {
                     if let Some(b) = msg.get("body") {
                         let file = b.get("file").and_then(Value::as_str).unwrap_or("").to_string();
-                        let lines: Vec<u32> = b.get("breakpoints").and_then(Value::as_array)
-                            .map(|arr| arr.iter().filter_map(|v| v.as_u64().map(|l| l as u32)).collect())
-                            .unwrap_or_default();
                         if file.is_empty() { return; }
-                        if lines.is_empty() {
+                        // Prefer rich "specs" (with condition/logMessage), fall back to plain "breakpoints" array
+                        let specs: Vec<BreakpointSpec> = if let Some(arr) = b.get("specs").and_then(Value::as_array) {
+                            arr.iter().filter_map(|v| {
+                                let line = v.get("line").and_then(Value::as_u64)? as u32;
+                                let condition = v.get("condition").and_then(Value::as_str).map(str::to_string);
+                                let log_message = v.get("log_message").and_then(Value::as_str).map(str::to_string);
+                                Some(BreakpointSpec { line, condition, log_message })
+                            }).collect()
+                        } else {
+                            b.get("breakpoints").and_then(Value::as_array)
+                                .map(|arr| arr.iter().filter_map(|v| {
+                                    v.as_u64().map(|l| BreakpointSpec { line: l as u32, ..Default::default() })
+                                }).collect())
+                                .unwrap_or_default()
+                        };
+                        if specs.is_empty() {
                             state.breakpoints.remove(&file);
                         } else {
-                            let specs: Vec<BreakpointSpec> = lines.iter()
-                                .map(|&line| BreakpointSpec { line, ..Default::default() })
-                                .collect();
                             state.breakpoints.insert(file.clone(), specs);
                         }
                         // Open as tab if not already
@@ -2052,6 +2061,23 @@ fn SourcePanel(
                     cb.as_ref().unchecked_ref(),
                 );
                 cb.forget();
+
+                // Register run-to-cursor callback (gutter right-click → "Run to cursor")
+                let ws_rtc = ws_senders_bp.clone();
+                let active_rtc = active_bp.clone();
+                let rtc_cb = Closure::wrap(Box::new(move |file: String, line: u32| {
+                    let Some(session_id) = active_rtc.get_untracked() else { return; };
+                    send_cmd(&ws_rtc, &session_id, "runToCursor", serde_json::json!({
+                        "file": file,
+                        "line": line
+                    }));
+                }) as Box<dyn Fn(String, u32)>);
+                let _ = Reflect::set(
+                    &window,
+                    &JsValue::from_str("__cm_on_run_to_cursor"),
+                    rtc_cb.as_ref().unchecked_ref(),
+                );
+                rtc_cb.forget();
             }
         }
     });
@@ -2443,6 +2469,20 @@ fn StackPanel(
             .and_then(|s| s.active_frame_id)
     };
 
+    let threads = move || {
+        active_session.get()
+            .and_then(|id| session_data.get().get(&id).cloned())
+            .map(|s| s.threads)
+            .unwrap_or_default()
+    };
+    let active_thread = move || {
+        active_session.get()
+            .and_then(|id| session_data.get().get(&id).cloned())
+            .map(|s| s.active_thread_id)
+            .unwrap_or(0)
+    };
+    let has_multiple_threads = move || threads().len() > 1;
+
     let header_class = move || {
         if event_seq() > 0 { "panel-header panel-updating" } else { "panel-header" }
     };
@@ -2457,6 +2497,47 @@ fn StackPanel(
         <div class="panel" class:panel-loading=stack_loading style="flex:1;overflow:hidden;border-bottom:1px solid var(--border)">
             <div class=header_class>
                 <h2>"Threads & Stack"</h2>
+                <Show when=has_multiple_threads>
+                    <select
+                        class="thread-selector"
+                        on:change={
+                            let ws_ts = ws_senders.clone();
+                            let data_ts = session_data;
+                            move |e| {
+                                use wasm_bindgen::JsCast;
+                                let val = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok())
+                                    .map(|s| s.value()).unwrap_or_default();
+                                let tid: u32 = val.parse().unwrap_or(0);
+                                if tid == 0 { return; }
+                                let Some(sid) = active_session.get_untracked() else { return; };
+                                data_ts.update(|map| {
+                                    if let Some(s) = map.get_mut(&sid) {
+                                        s.active_thread_id = tid;
+                                        s.stack_frames.clear();
+                                        s.variables.clear();
+                                        s.scopes.clear();
+                                        s.active_frame_id = None;
+                                    }
+                                });
+                                send_cmd(&ws_ts, &sid, "stackTrace",
+                                    serde_json::json!({ "threadId": tid, "levels": 20 }));
+                            }
+                        }
+                    >
+                        <For
+                            each=threads
+                            key=|t| t.id
+                            children=move |t: Thread| {
+                                let selected = move || active_thread() == t.id;
+                                view! {
+                                    <option value={t.id.to_string()} selected=selected>
+                                        {format!("Thread {} — {}", t.id, t.name)}
+                                    </option>
+                                }
+                            }
+                        />
+                    </select>
+                </Show>
                 <Show when=stack_loading>
                     <span class="panel-chip">"loading"</span>
                 </Show>
@@ -2764,21 +2845,84 @@ fn VariablesPanel(
                                     <Show when=move || is_expanded()>
                                         <For
                                             each=children_signal
-                                            key=|c| format!("{}={}", c.name, c.value)
-                                            children=move |c| {
-                                                let child_class = match c.kind.as_deref() {
-                                                    Some("int") | Some("float") => "var-number",
-                                                    Some("str")                 => "var-string",
-                                                    Some("bool")                => "var-bool",
-                                                    _                           => "var-value",
-                                                }.to_string();
-                                                view! {
-                                                    <li class="var-item var-child">
-                                                        <span class="var-indent">"  "</span>
-                                                        <span class="var-name">{c.name}</span>
-                                                        <span class="var-sep">" = "</span>
-                                                        <span class={child_class}>{c.value}</span>
-                                                    </li>
+                                            key=|c| format!("{}={}@{}", c.name, c.value, c.variables_reference)
+                                            children={
+                                                let ws_child = ws_senders2.clone();
+                                                move |c: Variable| {
+                                                    let child_class = match c.kind.as_deref() {
+                                                        Some("int") | Some("float") => "var-number",
+                                                        Some("str")                 => "var-string",
+                                                        Some("bool")                => "var-bool",
+                                                        _                           => "var-value",
+                                                    }.to_string();
+                                                    let cvref = c.variables_reference;
+                                                    let child_has_children = cvref > 0;
+                                                    let child_is_expanded = move || expanded().contains_key(&cvref);
+                                                    let child_chevron = move || if child_is_expanded() { "▼" } else { "▶" };
+                                                    let ws_ce = ws_child.clone();
+                                                    let on_expand_child = move |_: leptos::ev::MouseEvent| {
+                                                        if !child_has_children { return; }
+                                                        let Some(sid) = active_session.get_untracked() else { return; };
+                                                        let already = session_data.get_untracked()
+                                                            .get(&sid).map(|s| s.expanded_vars.contains_key(&cvref))
+                                                            .unwrap_or(false);
+                                                        if already {
+                                                            session_data.update(|map| {
+                                                                if let Some(s) = map.get_mut(&sid) {
+                                                                    s.expanded_vars.remove(&cvref);
+                                                                }
+                                                            });
+                                                        } else {
+                                                            session_data.update(|map| {
+                                                                if let Some(s) = map.get_mut(&sid) {
+                                                                    s.pending_var_ref = Some(cvref);
+                                                                }
+                                                            });
+                                                            send_cmd(&ws_ce, &sid, "variables",
+                                                                serde_json::json!({ "variablesReference": cvref }));
+                                                        }
+                                                    };
+                                                    let grandchildren = move || {
+                                                        expanded().get(&cvref).cloned().unwrap_or_default()
+                                                    };
+                                                    view! {
+                                                        <li class="var-item var-child">
+                                                            <span class="var-indent">"  "</span>
+                                                            <Show when=move || child_has_children>
+                                                                <span class="var-chevron" on:click=on_expand_child.clone()>
+                                                                    {child_chevron}
+                                                                </span>
+                                                            </Show>
+                                                            <Show when=move || !child_has_children>
+                                                                <span class="var-chevron var-leaf">"·"</span>
+                                                            </Show>
+                                                            <span class="var-name">{c.name.clone()}</span>
+                                                            <span class="var-sep">" = "</span>
+                                                            <span class={child_class}>{c.value.clone()}</span>
+                                                        </li>
+                                                        <Show when=move || child_is_expanded()>
+                                                            <For
+                                                                each=grandchildren
+                                                                key=|gc| format!("{}={}", gc.name, gc.value)
+                                                                children=move |gc: Variable| {
+                                                                    let gc_class = match gc.kind.as_deref() {
+                                                                        Some("int") | Some("float") => "var-number",
+                                                                        Some("str")                 => "var-string",
+                                                                        Some("bool")                => "var-bool",
+                                                                        _                           => "var-value",
+                                                                    }.to_string();
+                                                                    view! {
+                                                                        <li class="var-item var-grandchild">
+                                                                            <span class="var-indent">"    "</span>
+                                                                            <span class="var-name">{gc.name}</span>
+                                                                            <span class="var-sep">" = "</span>
+                                                                            <span class={gc_class}>{gc.value}</span>
+                                                                        </li>
+                                                                    }
+                                                                }
+                                                            />
+                                                        </Show>
+                                                    }
                                                 }
                                             }
                                         />
@@ -3462,22 +3606,28 @@ fn BreakpointsPanel(
                                             let at2 = at;
                                             let sd3 = sd2;
                                             let asi3 = asi2;
+                                            let ws_del = ws_senders.clone();
                                             move |spec: BreakpointSpec| {
                                                 let f2 = f.clone();
                                                 let f_for_class = f2.clone();
                                                 let f_for_click = f2.clone();
+                                                let f_for_del = f2.clone();
                                                 let at3 = at2;
                                                 let sd4 = sd3;
                                                 let asi4 = asi3;
                                                 let line = spec.line;
                                                 let cond = spec.condition.clone();
+                                                let log_msg = spec.log_message.clone();
+                                                let is_logpoint = log_msg.is_some();
+                                                let ws_rm = ws_del.clone();
+                                                let sd_rm = sd3;
+                                                let asi_rm = asi3;
                                                 view! {
                                                     <li
                                                         class="bp-line-item"
                                                         class:bp-just-verified=move || recent_bp() == Some((f_for_class.clone(), line))
                                                         style="cursor:pointer"
                                                         on:click=move |_| {
-                                                            // Open that file in the editor
                                                             if let Some(id) = asi4.get_untracked() {
                                                                 sd4.update(|map| {
                                                                     if let Some(s) = map.get_mut(&id) {
@@ -3488,11 +3638,12 @@ fn BreakpointsPanel(
                                                                 });
                                                             }
                                                             at3.set(Some(f_for_click.clone()));
-                                                            // Scroll editor to line
                                                             editor::set_exec_line(line);
                                                         }
                                                     >
-                                                        <span class="bp-dot">"●"</span>
+                                                        <span class={if is_logpoint { "bp-dot bp-logpoint" } else { "bp-dot" }}>
+                                                            {if is_logpoint { "◆" } else { "●" }}
+                                                        </span>
                                                         <span class="bp-line-num">"line "{line}</span>
                                                         {
                                                             let c = cond.clone();
@@ -3502,6 +3653,43 @@ fn BreakpointsPanel(
                                                                 view! { <span></span> }.into_any()
                                                             }
                                                         }
+                                                        {
+                                                            let lm = log_msg.clone();
+                                                            if let Some(msg) = lm {
+                                                                view! { <span class="bp-log-msg" title="Log message">"💬 "{msg}</span> }.into_any()
+                                                            } else {
+                                                                view! { <span></span> }.into_any()
+                                                            }
+                                                        }
+                                                        <span
+                                                            class="bp-remove-btn"
+                                                            title="Remove breakpoint"
+                                                            on:click={
+                                                                let ws_rm2 = ws_rm.clone();
+                                                                let f_del = f_for_del.clone();
+                                                                move |e: leptos::ev::MouseEvent| {
+                                                                    e.stop_propagation();
+                                                                    let Some(sid) = asi_rm.get_untracked() else { return; };
+                                                                    let remaining: Vec<Value> = sd_rm.get_untracked()
+                                                                        .get(&sid)
+                                                                        .and_then(|s| s.breakpoints.get(&f_del))
+                                                                        .map(|specs| specs.iter()
+                                                                            .filter(|s| s.line != line)
+                                                                            .map(|s| {
+                                                                                let mut obj = serde_json::json!({ "line": s.line });
+                                                                                if let Some(c) = &s.condition { obj["condition"] = Value::String(c.clone()); }
+                                                                                if let Some(lm) = &s.log_message { obj["logMessage"] = Value::String(lm.clone()); }
+                                                                                obj
+                                                                            })
+                                                                            .collect())
+                                                                        .unwrap_or_default();
+                                                                    send_cmd(&ws_rm2, &sid, "setBreakpoints", serde_json::json!({
+                                                                        "source": { "path": f_del },
+                                                                        "breakpoints": remaining
+                                                                    }));
+                                                                }
+                                                            }
+                                                        >"✕"</span>
                                                     </li>
                                                 }
                                             }
