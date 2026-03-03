@@ -1534,3 +1534,101 @@ fn v4_wait_for_output_returns_result() {
     // Must return matched + line fields
     assert!(text.contains("\"matched\""), "V4 expected 'matched' field: {text}");
 }
+
+// ─── W. Logpoints & hit-condition breakpoints ─────────────────────────────────
+
+#[test]
+fn w1_set_logpoint_via_set_breakpoint_tool() {
+    require_debugpy!();
+    let srv = ServerGuard::launch(7425, Some(43), None);
+    assert!(srv.wait_up(12), "W1 server never started");
+    assert!(srv.wait_paused(12), "W1 session never paused");
+
+    let mut p = McpProc::start(7425);
+    p.initialize();
+    let r = p.tool_call("set_breakpoint", serde_json::json!({
+        "file": target_py().to_str().unwrap(),
+        "line": 50,
+        "log_message": "step={step}, counter={counter.value}"
+    }));
+    p.stop();
+
+    let text = McpProc::text(&r);
+    assert!(r.get("error").is_none(), "W1 error: {r}");
+    assert!(text.contains("Logpoint"), "expected 'Logpoint' kind in response, got: {text}");
+    assert!(text.contains("log_message"), "expected log_message in extras: {text}");
+}
+
+#[test]
+fn w2_set_logpoint_dedicated_tool() {
+    require_debugpy!();
+    let srv = ServerGuard::launch(7426, Some(43), None);
+    assert!(srv.wait_up(12), "W2 server never started");
+    assert!(srv.wait_paused(12), "W2 session never paused");
+
+    let mut p = McpProc::start(7426);
+    p.initialize();
+    let r = p.tool_call("set_logpoint", serde_json::json!({
+        "file": target_py().to_str().unwrap(),
+        "line": 50,
+        "message": "step={step}"
+    }));
+    p.stop();
+
+    let text = McpProc::text(&r);
+    assert!(r.get("error").is_none(), "W2 error: {r}");
+    assert!(text.contains("Logpoint"), "expected 'Logpoint' in response: {text}");
+}
+
+#[test]
+fn w3_set_breakpoint_with_hit_condition() {
+    require_debugpy!();
+    let srv = ServerGuard::launch(7427, Some(43), None);
+    assert!(srv.wait_up(12), "W3 server never started");
+    assert!(srv.wait_paused(12), "W3 session never paused");
+
+    let mut p = McpProc::start(7427);
+    p.initialize();
+    let r = p.tool_call("set_breakpoint", serde_json::json!({
+        "file": target_py().to_str().unwrap(),
+        "line": 50,
+        "hit_condition": ">= 3"
+    }));
+    p.stop();
+
+    let text = McpProc::text(&r);
+    assert!(r.get("error").is_none(), "W3 error: {r}");
+    assert!(text.contains("hit_condition"), "expected hit_condition in extras: {text}");
+}
+
+#[test]
+fn w4_logpoint_appears_in_list_breakpoints() {
+    require_debugpy!();
+    let srv = ServerGuard::launch(7428, Some(43), None);
+    assert!(srv.wait_up(12), "W4 server never started");
+    assert!(srv.wait_paused(12), "W4 session never paused");
+
+    let mut p = McpProc::start(7428);
+    p.initialize();
+    p.tool_call("set_logpoint", serde_json::json!({
+        "file": target_py().to_str().unwrap(),
+        "line": 50,
+        "message": "counter={counter.value}"
+    }));
+    let r = p.tool_call("list_breakpoints", serde_json::json!({}));
+    p.stop();
+
+    let text = McpProc::text(&r);
+    assert!(r.get("error").is_none(), "W4 error: {r}");
+    assert!(text.contains("log_message"), "expected log_message in listed breakpoints: {text}");
+}
+
+#[test]
+fn w5_set_logpoint_tool_listed_in_tools() {
+    let mut p = McpProc::start(7331);
+    p.initialize();
+    let r = p.send("tools/list", Some(serde_json::json!({})));
+    p.stop();
+    let tools_json = serde_json::to_string(&r).unwrap();
+    assert!(tools_json.contains("set_logpoint"), "set_logpoint not in tools/list");
+}
