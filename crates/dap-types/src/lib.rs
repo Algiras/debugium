@@ -92,6 +92,10 @@ pub struct SourceBreakpoint {
     pub line: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub condition: Option<String>,
+    #[serde(rename = "hitCondition", skip_serializing_if = "Option::is_none")]
+    pub hit_condition: Option<String>,
+    #[serde(rename = "logMessage", skip_serializing_if = "Option::is_none")]
+    pub log_message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

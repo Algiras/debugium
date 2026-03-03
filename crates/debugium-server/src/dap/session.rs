@@ -25,12 +25,16 @@ pub struct TimelineEntry {
     pub stack_summary: Vec<String>,
 }
 
-/// Breakpoint spec with optional condition.
+/// Breakpoint spec with optional condition, hit condition, and log message.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BpSpec {
     pub line: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub condition: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hit_condition: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_message: Option<String>,
 }
 
 /// Result of evaluating one watch expression at a stop.
@@ -670,7 +674,7 @@ impl Session {
     /// Set breakpoints on a running session (e.g. from the UI or MCP).
     /// Stores verified specs in `self.breakpoints`.
     pub async fn set_breakpoints(&self, file: &str, lines: Vec<u32>) -> Result<Value> {
-        self.set_breakpoints_with_conditions(file, lines.into_iter().map(|l| BpSpec { line: l, condition: None }).collect()).await
+        self.set_breakpoints_with_conditions(file, lines.into_iter().map(|l| BpSpec { line: l, condition: None, hit_condition: None, log_message: None }).collect()).await
     }
 
     /// Set breakpoints with optional conditions.
@@ -681,6 +685,12 @@ impl Session {
                 let mut obj = serde_json::json!({ "line": s.line });
                 if let Some(cond) = &s.condition {
                     obj["condition"] = Value::String(cond.clone());
+                }
+                if let Some(hc) = &s.hit_condition {
+                    obj["hitCondition"] = Value::String(hc.clone());
+                }
+                if let Some(lm) = &s.log_message {
+                    obj["logMessage"] = Value::String(lm.clone());
                 }
                 obj
             }).collect::<Vec<_>>()
@@ -694,11 +704,15 @@ impl Session {
             .and_then(Value::as_array)
             .map(|arr| arr.iter().enumerate()
                 .filter_map(|(i, b)| {
-                    // Use line from response, or fall back to the input spec at same index
                     let line = b.get("line").and_then(Value::as_u64).map(|l| l as u32)
                         .or_else(|| specs.get(i).map(|s| s.line))?;
-                    let condition = specs.iter().find(|s| s.line == line).and_then(|s| s.condition.clone());
-                    Some(BpSpec { line, condition })
+                    let orig = specs.iter().find(|s| s.line == line);
+                    Some(BpSpec {
+                        line,
+                        condition: orig.and_then(|s| s.condition.clone()),
+                        hit_condition: orig.and_then(|s| s.hit_condition.clone()),
+                        log_message: orig.and_then(|s| s.log_message.clone()),
+                    })
                 })
                 .collect())
             .unwrap_or_else(|| specs.clone());
@@ -779,6 +793,12 @@ async fn attach_child_session(
                 let mut obj = serde_json::json!({ "line": s.line });
                 if let Some(cond) = &s.condition {
                     obj["condition"] = Value::String(cond.clone());
+                }
+                if let Some(hc) = &s.hit_condition {
+                    obj["hitCondition"] = Value::String(hc.clone());
+                }
+                if let Some(lm) = &s.log_message {
+                    obj["logMessage"] = Value::String(lm.clone());
                 }
                 obj
             }).collect::<Vec<Value>>()

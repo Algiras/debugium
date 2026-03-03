@@ -391,16 +391,34 @@ fn tool_list() -> Value {
             },
             {
                 "name": "set_breakpoint",
-                "description": "Set a single breakpoint at a specific file and line. Optionally specify a condition expression. Returns the verified line number from the adapter.",
+                "description": "Set a single breakpoint at a specific file and line. Optionally specify a condition, hit condition, or log message. Returns the verified line number from the adapter.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "session_id": { "type": "string" },
                         "file": { "type": "string", "description": "Absolute path to the source file." },
                         "line": { "type": "integer", "description": "Line number to break on (1-indexed)." },
-                        "condition": { "type": "string", "description": "Optional condition expression — only pause when this evaluates to true." }
+                        "condition": { "type": "string", "description": "Optional condition expression — only pause when this evaluates to true." },
+                        "hit_condition": { "type": "string", "description": "Optional hit count condition — e.g. '== 5' or '>= 10'. Breaks when the hit count satisfies this expression." },
+                        "log_message": { "type": "string", "description": "Optional log message template — turns this into a logpoint that logs instead of stopping. Use {expr} for interpolation, e.g. 'x={x}, len={len(items)}'." }
                     },
                     "required": ["file", "line"]
+                }
+            },
+            {
+                "name": "set_logpoint",
+                "description": "Set a logpoint — a non-stopping breakpoint that logs a message template to the console. The program does NOT pause; the message is printed to debug console output. Use {expression} syntax for interpolation.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string" },
+                        "file": { "type": "string", "description": "Absolute path to the source file." },
+                        "line": { "type": "integer", "description": "Line number for the logpoint (1-indexed)." },
+                        "message": { "type": "string", "description": "Log message template. Use {expression} for interpolation, e.g. 'counter={counter}, items={len(items)}'." },
+                        "condition": { "type": "string", "description": "Optional condition — only log when this evaluates to true." },
+                        "hit_condition": { "type": "string", "description": "Optional hit count condition — e.g. '>= 10'. Only log when the hit count satisfies this." }
+                    },
+                    "required": ["file", "line", "message"]
                 }
             },
             {
@@ -1521,21 +1539,26 @@ pub async fn dispatch_tool(
             }
         }
 
-        "set_breakpoint" => {
+        "set_breakpoint" | "set_logpoint" => {
             use crate::dap::session::BpSpec;
             let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
             let file = args.get("file").and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("`file` is required"))?;
             let line = require_u32(&args, "line")?;
             let condition = args.get("condition").and_then(Value::as_str).map(str::to_string);
+            let hit_condition = args.get("hit_condition").and_then(Value::as_str).map(str::to_string);
+            let log_message = args.get("log_message")
+                .or_else(|| args.get("message"))
+                .and_then(Value::as_str).map(str::to_string);
 
-            // Build specs list preserving existing ones, add/replace this line
+            let new_spec = BpSpec { line, condition: condition.clone(), hit_condition: hit_condition.clone(), log_message: log_message.clone() };
+
             let mut existing: Vec<BpSpec> = s.breakpoints.read().await
                 .get(file).cloned().unwrap_or_default();
             if let Some(pos) = existing.iter().position(|s| s.line == line) {
-                existing[pos].condition = condition.clone();
+                existing[pos] = new_spec;
             } else {
-                existing.push(BpSpec { line, condition: condition.clone() });
+                existing.push(new_spec);
             }
             let resp = s.set_breakpoints_with_conditions(file, existing).await?;
             let verified = resp.get("body").and_then(|b| b.get("breakpoints"))
@@ -1547,8 +1570,14 @@ pub async fn dispatch_tool(
                 .unwrap_or(line as u64) as u32;
             let stored = s.breakpoints.read().await.get(file).cloned().unwrap_or_default();
             broadcast_breakpoints_changed(hub, session_id, file, &stored).await;
-            let cond_msg = condition.map(|c| format!(" [condition: {c}]")).unwrap_or_default();
-            Ok(format!("Breakpoint set at {}:{} (verified line: {}){}", file, line, verified, cond_msg))
+
+            let mut extras = Vec::new();
+            if let Some(c) = &condition { extras.push(format!("condition: {c}")); }
+            if let Some(hc) = &hit_condition { extras.push(format!("hit_condition: {hc}")); }
+            if let Some(lm) = &log_message { extras.push(format!("log_message: {lm}")); }
+            let suffix = if extras.is_empty() { String::new() } else { format!(" [{}]", extras.join(", ")) };
+            let kind = if log_message.is_some() { "Logpoint" } else { "Breakpoint" };
+            Ok(format!("{kind} set at {file}:{line} (verified line: {verified}){suffix}"))
         }
 
         "get_console_output" => {
