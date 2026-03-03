@@ -183,7 +183,6 @@ function _notifyBpChange() {
 // ─── BP Condition popover ──────────────────────────────────────────────────
 
 function showBpPopover(lineNo, x, y, view) {
-    // Remove any existing popover
     document.querySelectorAll('.bp-popover').forEach(el => el.remove());
 
     const spec = bpSpecs.get(lineNo) || {};
@@ -192,6 +191,7 @@ function showBpPopover(lineNo, x, y, view) {
     div.style.cssText = `position:fixed;left:${x}px;top:${y}px;z-index:9999`;
     div.innerHTML = `
         <div class="bp-popover-title">Line ${lineNo}</div>
+        <button class="bp-run-to-cursor">▶ Run to cursor</button>
         <label>Condition:<input type="text" class="bp-cond" placeholder="e.g. x > 10" value="${spec.condition || ''}"></label>
         <label>Log message:<input type="text" class="bp-log" placeholder="e.g. step={step}" value="${spec.logMessage || ''}"></label>
         <div class="bp-popover-btns">
@@ -200,6 +200,12 @@ function showBpPopover(lineNo, x, y, view) {
         </div>
     `;
 
+    div.querySelector('.bp-run-to-cursor').onclick = () => {
+        if (window.__cm_on_run_to_cursor) {
+            window.__cm_on_run_to_cursor(lastPath || "", lineNo);
+        }
+        div.remove();
+    };
     div.querySelector('.bp-save').onclick = () => {
         const cond = div.querySelector('.bp-cond').value.trim();
         const log = div.querySelector('.bp-log').value.trim();
@@ -215,7 +221,6 @@ function showBpPopover(lineNo, x, y, view) {
 
     document.body.appendChild(div);
 
-    // Close on outside click
     setTimeout(() => {
         const close = (e) => { if (!div.contains(e.target)) { div.remove(); document.removeEventListener('mousedown', close); } };
         document.addEventListener('mousedown', close);

@@ -24,6 +24,7 @@ use crate::server::hub::Hub;
 
 mod tools;
 pub use tools::dispatch_tool;
+pub use tools::broadcast_breakpoints_changed;
 
 // ─── Wire types ──────────────────────────────────────────────────────────────
 
@@ -74,6 +75,7 @@ const CAPABILITY_GATED_TOOLS: &[(&str, &str)] = &[
     ("restart",                  "supportsRestartRequest"),
     ("terminate",                "supportsTerminateRequest"),
     ("get_exception_info",       "supportsExceptionInfoRequest"),
+    ("restart_frame",            "supportsRestartFrame"),
 ];
 
 fn tool_list(adapter_caps: &Value) -> Value {
@@ -775,6 +777,18 @@ fn tool_list(adapter_caps: &Value) -> Value {
                         "max_steps":     { "type": "integer", "description": "Maximum step_over calls before giving up (default 20)." },
                         "thread_id":     { "type": "integer", "description": "Thread ID (default 1)." },
                         "session_id":    { "type": "string" }
+                    }
+                }
+            },
+            {
+                "name": "restart_frame",
+                "description": "Restart execution from a specific stack frame. Re-runs the function from its beginning without restarting the whole session. Requires adapter support (supportsRestartFrame).",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["frame_id"],
+                    "properties": {
+                        "frame_id":   { "type": "integer", "description": "Stack frame ID to restart (from get_stack_trace)." },
+                        "session_id": { "type": "string" }
                     }
                 }
             }

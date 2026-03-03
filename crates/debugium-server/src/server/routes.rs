@@ -13,7 +13,7 @@ use tracing::{debug, warn};
 use dap_types::WsCommand;
 
 use crate::dap::adapter::{Adapter, AdapterKind};
-use crate::dap::session::{Session, SessionRegistry};
+use crate::dap::session::{BpSpec, Session, SessionRegistry};
 use crate::server::hub::Hub;
 
 #[derive(Clone)]
@@ -126,6 +126,45 @@ async fn handle_ui_command(cmd: WsCommand, state: &AppState) {
                 }
                 Err(e) => warn!("command setBreakpoints failed: {e}"),
             }
+        }
+        "runToCursor" => {
+            let file = args.as_ref().and_then(|a| a.get("file")).and_then(Value::as_str)
+                .unwrap_or("").to_string();
+            let line = args.as_ref().and_then(|a| a.get("line")).and_then(Value::as_u64)
+                .unwrap_or(0) as u32;
+            if file.is_empty() || line == 0 { return; }
+            let session = session.clone();
+            let hub = state.hub.clone();
+            let sid = cmd.session_id.clone();
+            tokio::spawn(async move {
+                let current: Vec<BpSpec> = session.breakpoints.read().await
+                    .get(&file).cloned().unwrap_or_default();
+                let already_has = current.iter().any(|bp| bp.line == line);
+                if !already_has {
+                    let mut with_temp = current.clone();
+                    with_temp.push(BpSpec { line, condition: None, log_message: None, hit_condition: None });
+                    let _ = session.set_breakpoints_with_conditions(&file, with_temp).await;
+                }
+                let thread_id = session.last_stopped.read().await
+                    .as_ref().and_then(|e| e.get("threadId").and_then(Value::as_u64))
+                    .unwrap_or(1) as u32;
+                let mut stopped_rx = session.stopped_tx.subscribe();
+                let _ = session.active_client().await
+                    .request("continue", Some(json!({ "threadId": thread_id }))).await;
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    stopped_rx.changed(),
+                ).await;
+                if !already_has {
+                    let refreshed: Vec<BpSpec> = session.breakpoints.read().await
+                        .get(&file).cloned().unwrap_or_default();
+                    let without_temp: Vec<BpSpec> = refreshed.into_iter()
+                        .filter(|bp| bp.line != line)
+                        .collect();
+                    let _ = session.set_breakpoints_with_conditions(&file, without_temp.clone()).await;
+                    crate::mcp::broadcast_breakpoints_changed(&hub, &sid, &file, &without_temp).await;
+                }
+            });
         }
         "setExceptionBreakpoints" | "setVariable" | "completions"
         | "variables" | "scopes" | "stackTrace" => {

@@ -13,7 +13,7 @@ use crate::server::hub::Hub;
 
 // ─── Broadcast breakpoints_changed so the UI can update gutter dots ──────────
 
-async fn broadcast_breakpoints_changed(hub: &Arc<Hub>, session_id: &str, file: &str, specs: &[crate::dap::session::BpSpec]) {
+pub async fn broadcast_breakpoints_changed(hub: &Arc<Hub>, session_id: &str, file: &str, specs: &[crate::dap::session::BpSpec]) {
     use dap_types::WsEnvelope;
     let lines: Vec<u32> = specs.iter().map(|s| s.line).collect();
     let envelope = WsEnvelope {
@@ -430,6 +430,19 @@ pub async fn dispatch_tool(
             let bps: Vec<Value> = names.iter().map(|n| json!({ "name": n })).collect();
             let resp = s.active_client().await.request("setFunctionBreakpoints", Some(json!({ "breakpoints": bps }))).await?;
             Ok(format!("Function breakpoints set: {:?}\n{}", names, serde_json::to_string_pretty(&resp)?))
+        }
+
+        "restart_frame" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session not found"))?;
+            let frame_id = require_u32(&args, "frame_id")?;
+            let caps = s.get_capabilities().await;
+            if !caps.get("supportsRestartFrame").and_then(Value::as_bool).unwrap_or(false) {
+                return Ok("Adapter does not support restartFrame (supportsRestartFrame=false).".to_string());
+            }
+            let mut stopped_rx = s.stopped_tx.subscribe();
+            s.active_client().await.request("restartFrame", Some(json!({ "frameId": frame_id }))).await?;
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(10), stopped_rx.changed()).await;
+            Ok(format!("Frame {} restarted. Call get_debug_context for new location.", frame_id))
         }
 
         // ── Compound / LLM-optimised tools ────────────────────────────
