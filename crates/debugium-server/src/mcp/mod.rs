@@ -63,9 +63,23 @@ impl RpcResponse {
 
 // ─── Tool definitions ────────────────────────────────────────────────────────
 
-fn tool_list() -> Value {
-    json!({
-        "tools": [
+/// Maps tool names to the DAP capability they require.
+/// Tools not in this list are always included.
+const CAPABILITY_GATED_TOOLS: &[(&str, &str)] = &[
+    ("read_memory",              "supportsReadMemoryRequest"),
+    ("write_memory",             "supportsWriteMemoryRequest"),
+    ("disassemble",              "supportsDisassembleRequest"),
+    ("set_function_breakpoints", "supportsFunctionBreakpoints"),
+    ("set_variable",             "supportsSetVariable"),
+    ("restart",                  "supportsRestartRequest"),
+    ("terminate",                "supportsTerminateRequest"),
+    ("get_exception_info",       "supportsExceptionInfoRequest"),
+];
+
+fn tool_list(adapter_caps: &Value) -> Value {
+    let has_session = adapter_caps.is_object() && !adapter_caps.as_object().unwrap().is_empty();
+
+    let all_tools = json!([
             {
                 "name": "get_sessions",
                 "description": "List all active debug sessions.",
@@ -626,6 +640,48 @@ fn tool_list() -> Value {
                 }
             },
             {
+                "name": "read_memory",
+                "description": "Read raw memory from the debuggee process. Primarily for native debugging (C/C++/Rust). Returns base64-encoded bytes. Requires adapter support (supportsReadMemoryRequest).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string" },
+                        "memory_reference": { "type": "string", "description": "Memory reference (hex address or expression)." },
+                        "offset": { "type": "integer", "description": "Byte offset from the reference. Default: 0." },
+                        "count": { "type": "integer", "description": "Number of bytes to read. Default: 128." }
+                    },
+                    "required": ["memory_reference"]
+                }
+            },
+            {
+                "name": "write_memory",
+                "description": "Write raw bytes to the debuggee's memory. Use with extreme caution. Requires adapter support (supportsWriteMemoryRequest).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string" },
+                        "memory_reference": { "type": "string", "description": "Memory address to write to." },
+                        "offset": { "type": "integer", "description": "Byte offset from the reference. Default: 0." },
+                        "data": { "type": "string", "description": "Base64-encoded bytes to write." }
+                    },
+                    "required": ["memory_reference", "data"]
+                }
+            },
+            {
+                "name": "disassemble",
+                "description": "Disassemble machine instructions at a memory address. Primarily for native debugging. Requires adapter support (supportsDisassembleRequest).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string" },
+                        "memory_reference": { "type": "string", "description": "Memory address to start disassembly." },
+                        "offset": { "type": "integer", "description": "Byte offset. Default: 0." },
+                        "instruction_count": { "type": "integer", "description": "Number of instructions to disassemble. Default: 20." }
+                    },
+                    "required": ["memory_reference"]
+                }
+            },
+            {
                 "name": "launch_session",
                 "description": "Launch a new debug session autonomously. Spawns the debug adapter, connects, sets breakpoints, and waits until the session is paused (or running). Returns the session_id for use with all other tools.",
                 "inputSchema": {
@@ -722,8 +778,23 @@ fn tool_list() -> Value {
                     }
                 }
             }
-        ]
-    })
+    ]);
+
+    if !has_session {
+        return json!({ "tools": all_tools });
+    }
+
+    let filtered: Vec<Value> = all_tools.as_array().unwrap().iter().filter(|tool| {
+        let name = tool.get("name").and_then(Value::as_str).unwrap_or("");
+        for &(gated_name, cap_key) in CAPABILITY_GATED_TOOLS {
+            if name == gated_name {
+                return adapter_caps.get(cap_key).and_then(Value::as_bool).unwrap_or(false);
+            }
+        }
+        true
+    }).cloned().collect();
+
+    json!({ "tools": filtered })
 }
 
 // ─── Client capability tracking ──────────────────────────────────────────────
@@ -987,7 +1058,22 @@ async fn handle_request(
         "ping" => RpcResponse::ok(id, json!({})),
 
         // Tool discovery
-        "tools/list" => RpcResponse::ok(id, tool_list()),
+        "tools/list" => {
+            let adapter_caps = if let Some(port) = proxy_port {
+                match proxy_tool_via_http(port, "get_capabilities", json!({})).await {
+                    Ok(text) => serde_json::from_str::<Value>(&text).unwrap_or(json!({})),
+                    Err(_) => json!({}),
+                }
+            } else {
+                let ids = registry.list().await;
+                if let Some(sid) = ids.first() {
+                    if let Some(s) = registry.get(sid).await {
+                        s.get_capabilities().await
+                    } else { json!({}) }
+                } else { json!({}) }
+            };
+            RpcResponse::ok(id, tool_list(&adapter_caps))
+        }
 
         // Tool invocation
         "tools/call" => {

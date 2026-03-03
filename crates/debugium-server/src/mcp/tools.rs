@@ -1225,6 +1225,69 @@ pub async fn dispatch_tool(
             }
         }
 
+        // ── Memory inspection ────────────────────────────────────────
+        "read_memory" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
+            let caps = s.get_capabilities().await;
+            if !caps.get("supportsReadMemoryRequest").and_then(Value::as_bool).unwrap_or(false) {
+                return Ok("Adapter does not support readMemory (supportsReadMemoryRequest=false). This feature requires a native debugger like lldb-dap.".to_string());
+            }
+            let mem_ref = args.get("memory_reference").and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("`memory_reference` is required"))?;
+            let offset = args.get("offset").and_then(Value::as_i64).unwrap_or(0);
+            let count = args.get("count").and_then(Value::as_u64).unwrap_or(128);
+
+            let resp = s.client.request("readMemory", Some(json!({
+                "memoryReference": mem_ref,
+                "offset": offset,
+                "count": count,
+            }))).await?;
+            let body = resp.get("body").cloned().unwrap_or(json!(null));
+            Ok(serde_json::to_string_pretty(&body)?)
+        }
+
+        "write_memory" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
+            let caps = s.get_capabilities().await;
+            if !caps.get("supportsWriteMemoryRequest").and_then(Value::as_bool).unwrap_or(false) {
+                return Ok("Adapter does not support writeMemory (supportsWriteMemoryRequest=false).".to_string());
+            }
+            let mem_ref = args.get("memory_reference").and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("`memory_reference` is required"))?;
+            let offset = args.get("offset").and_then(Value::as_i64).unwrap_or(0);
+            let data = args.get("data").and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("`data` (base64) is required"))?;
+
+            let resp = s.client.request("writeMemory", Some(json!({
+                "memoryReference": mem_ref,
+                "offset": offset,
+                "data": data,
+            }))).await?;
+            let written = resp.get("body")
+                .and_then(|b| b.get("bytesWritten")).and_then(Value::as_u64).unwrap_or(0);
+            Ok(format!("Wrote {written} byte(s) to {mem_ref}+{offset}"))
+        }
+
+        "disassemble" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
+            let caps = s.get_capabilities().await;
+            if !caps.get("supportsDisassembleRequest").and_then(Value::as_bool).unwrap_or(false) {
+                return Ok("Adapter does not support disassemble (supportsDisassembleRequest=false).".to_string());
+            }
+            let mem_ref = args.get("memory_reference").and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("`memory_reference` is required"))?;
+            let offset = args.get("offset").and_then(Value::as_i64).unwrap_or(0);
+            let count = args.get("instruction_count").and_then(Value::as_u64).unwrap_or(20);
+
+            let resp = s.client.request("disassemble", Some(json!({
+                "memoryReference": mem_ref,
+                "offset": offset,
+                "instructionCount": count,
+            }))).await?;
+            let body = resp.get("body").cloned().unwrap_or(json!(null));
+            Ok(serde_json::to_string_pretty(&body)?)
+        }
+
         // ── Session lifecycle ─────────────────────────────────────
         "launch_session" => {
             let program_str = args.get("program").and_then(Value::as_str)

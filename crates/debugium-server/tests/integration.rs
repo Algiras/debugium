@@ -1865,3 +1865,53 @@ fn aa3_import_session_restores_findings() {
     assert!(text.contains("findings: 2"), "expected 2 findings imported: {text}");
     assert!(text.contains("watches: 1"), "expected 1 watch imported: {text}");
 }
+
+// ─── AB. Memory inspection + capability gating ────────────────────────────────
+
+#[test]
+fn ab1_memory_tools_listed_without_session() {
+    let mut p = McpProc::start(7331);
+    p.initialize();
+    let r = p.send("tools/list", Some(serde_json::json!({})));
+    p.stop();
+    let tools_json = serde_json::to_string(&r).unwrap();
+    assert!(tools_json.contains("read_memory"), "read_memory not in tools/list (no session)");
+    assert!(tools_json.contains("write_memory"), "write_memory not in tools/list (no session)");
+    assert!(tools_json.contains("disassemble"), "disassemble not in tools/list (no session)");
+}
+
+#[test]
+fn ab2_memory_tools_hidden_for_python() {
+    require_debugpy!();
+    let srv = ServerGuard::launch(7436, Some(43), None);
+    assert!(srv.wait_up(12), "AB2 server never started");
+    assert!(srv.wait_paused(12), "AB2 session never paused");
+
+    let mut p = McpProc::start(7436);
+    p.initialize();
+    let r = p.send("tools/list", Some(serde_json::json!({})));
+    p.stop();
+
+    let tools_json = serde_json::to_string(&r).unwrap();
+    assert!(!tools_json.contains("\"read_memory\""), "read_memory should be hidden for Python");
+    assert!(!tools_json.contains("\"write_memory\""), "write_memory should be hidden for Python");
+    assert!(!tools_json.contains("\"disassemble\""), "disassemble should be hidden for Python");
+}
+
+#[test]
+fn ab3_python_still_shows_supported_tools() {
+    require_debugpy!();
+    let srv = ServerGuard::launch(7437, Some(43), None);
+    assert!(srv.wait_up(12), "AB3 server never started");
+    assert!(srv.wait_paused(12), "AB3 session never paused");
+
+    let mut p = McpProc::start(7437);
+    p.initialize();
+    let r = p.send("tools/list", Some(serde_json::json!({})));
+    p.stop();
+
+    let tools_json = serde_json::to_string(&r).unwrap();
+    assert!(tools_json.contains("\"get_debug_context\""), "get_debug_context missing");
+    assert!(tools_json.contains("\"step_over\""), "step_over missing");
+    assert!(tools_json.contains("\"set_breakpoints\""), "set_breakpoints missing");
+}
