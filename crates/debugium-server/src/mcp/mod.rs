@@ -139,9 +139,9 @@ fn tool_list(adapter_caps: &Value) -> Value {
                     "type": "object",
                     "properties": {
                         "session_id": { "type": "string" },
-                        "thread_id": { "type": "integer" }
+                        "thread_id": { "type": "integer", "description": "Thread to step. Auto-detected from last stopped event if omitted." }
                     },
-                    "required": ["thread_id"]
+                    "required": []
                 }
             },
             {
@@ -151,9 +151,9 @@ fn tool_list(adapter_caps: &Value) -> Value {
                     "type": "object",
                     "properties": {
                         "session_id": { "type": "string" },
-                        "thread_id": { "type": "integer" }
+                        "thread_id": { "type": "integer", "description": "Thread to step. Auto-detected from last stopped event if omitted." }
                     },
-                    "required": ["thread_id"]
+                    "required": []
                 }
             },
             {
@@ -163,9 +163,9 @@ fn tool_list(adapter_caps: &Value) -> Value {
                     "type": "object",
                     "properties": {
                         "session_id": { "type": "string" },
-                        "thread_id": { "type": "integer" }
+                        "thread_id": { "type": "integer", "description": "Thread to step. Auto-detected from last stopped event if omitted." }
                     },
-                    "required": ["thread_id"]
+                    "required": []
                 }
             },
             {
@@ -175,9 +175,9 @@ fn tool_list(adapter_caps: &Value) -> Value {
                     "type": "object",
                     "properties": {
                         "session_id": { "type": "string" },
-                        "thread_id": { "type": "integer" }
+                        "thread_id": { "type": "integer", "description": "Thread to pause. Auto-detected from last stopped event if omitted." }
                     },
-                    "required": ["thread_id"]
+                    "required": []
                 }
             },
             {
@@ -196,10 +196,10 @@ fn tool_list(adapter_caps: &Value) -> Value {
                     "type": "object",
                     "properties": {
                         "session_id": { "type": "string" },
-                        "thread_id": { "type": "integer" },
+                        "thread_id": { "type": "integer", "description": "Auto-detected from last stopped event if omitted." },
                         "depth": { "type": "integer", "description": "Max frames to return. Default 20." }
                     },
-                    "required": ["thread_id"]
+                    "required": []
                 }
             },
             {
@@ -449,9 +449,9 @@ fn tool_list(adapter_caps: &Value) -> Value {
                     "type": "object",
                     "properties": {
                         "session_id": { "type": "string" },
-                        "thread_id": { "type": "integer", "description": "Thread ID (from get_threads). Required." }
+                        "thread_id": { "type": "integer", "description": "Auto-detected from last stopped event if omitted." }
                     },
-                    "required": ["thread_id"]
+                    "required": []
                 }
             },
             {
