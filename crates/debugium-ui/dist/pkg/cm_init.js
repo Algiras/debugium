@@ -293,6 +293,7 @@ function buildExtensions(path) {
         annGutter,
         execArrowGutter,
         execLinePlugin,
+        inlineValuesPlugin,
         themeCompartment.of(currentTheme()),
         langExt(path),
         EditorView.editable.of(false),
@@ -306,6 +307,7 @@ function buildExtensions(path) {
             ".cm-bp-marker": { color: "#e51400", cursor: "pointer" },
             ".cm-ann-marker": { cursor: "default" },
             ".cm-exec-line": { background: "rgba(255,204,0,0.1) !important" },
+            ".cm-inline-value": { color: "rgba(128,128,128,0.75)", fontStyle: "italic", fontSize: "12px" },
         }),
     ];
 }
@@ -386,6 +388,61 @@ window.__cm_set_annotations = function(annotationsJson, filePath) {
     try {
         const items = JSON.parse(annotationsJson);
         items.forEach(a => annSpecs.set(a.line, { message: a.message, color: a.color || "blue" }));
+    } catch (_) {}
+    if (activeView) activeView.dispatch({});
+};
+
+// ─── Inline variable values ─────────────────────────────────────────────────
+
+const inlineValues = new Map(); // line number → formatted string
+
+const inlineValuesPlugin = ViewPlugin.fromClass(class {
+    constructor(view) { this.decorations = this.build(view); }
+    update(update) { this.decorations = this.build(update.view); }
+    build(view) {
+        if (inlineValues.size === 0) return Decoration.none;
+        const builder = new RangeSetBuilder();
+        for (const { from, to } of view.visibleRanges) {
+            for (let pos = from; pos <= to;) {
+                const line = view.state.doc.lineAt(pos);
+                if (inlineValues.has(line.number)) {
+                    const text = inlineValues.get(line.number);
+                    const widget = Decoration.widget({
+                        widget: new InlineValueWidget(text),
+                        side: 1,
+                    });
+                    builder.add(line.to, line.to, widget);
+                }
+                pos = line.to + 1;
+            }
+        }
+        return builder.finish();
+    }
+}, { decorations: v => v.decorations });
+
+class InlineValueWidget {
+    constructor(text) { this.text = text; }
+    toDOM() {
+        const span = document.createElement("span");
+        span.className = "cm-inline-value";
+        span.textContent = "    " + this.text;
+        return span;
+    }
+    eq(other) { return this.text === other.text; }
+    get estimatedHeight() { return -1; }
+    ignoreEvent() { return true; }
+}
+
+/**
+ * Show inline variable values at specific lines.
+ * Called from Rust via `window.__cm_set_inline_values(json)`.
+ * json: array of { line: number, text: string }
+ */
+window.__cm_set_inline_values = function(json) {
+    inlineValues.clear();
+    try {
+        const items = JSON.parse(json);
+        items.forEach(item => inlineValues.set(item.line, item.text));
     } catch (_) {}
     if (activeView) activeView.dispatch({});
 };

@@ -2154,9 +2154,42 @@ fn SourcePanel(
                     });
                 }
                 editor::set_exec_line(line);
+
+                // Show inline variable values at the execution line
+                let vars = &state.variables;
+                if !vars.is_empty() {
+                    let inline: Vec<serde_json::Value> = {
+                        let mut items = Vec::new();
+                        let compact: Vec<String> = vars.iter()
+                            .filter(|v| !v.name.starts_with("__") && v.name != "special variables" && v.name != "function variables")
+                            .take(8)
+                            .map(|v| {
+                                let val = if v.value.len() > 40 {
+                                    format!("{}…", &v.value[..40])
+                                } else {
+                                    v.value.clone()
+                                };
+                                format!("{} = {}", v.name, val)
+                            })
+                            .collect();
+                        if !compact.is_empty() {
+                            items.push(serde_json::json!({
+                                "line": line,
+                                "text": compact.join(", ")
+                            }));
+                        }
+                        items
+                    };
+                    if let Ok(json) = serde_json::to_string(&inline) {
+                        editor::set_inline_values(&json);
+                    }
+                } else {
+                    editor::set_inline_values("[]");
+                }
             }
         } else {
             editor::set_exec_line(0);
+            editor::set_inline_values("[]");
         }
     });
 

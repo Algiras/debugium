@@ -1481,6 +1481,19 @@ li.session-ended .session-item {
     animation: exec-line-sweep 0.55s ease-out forwards !important;
 }
 
+/* ─── Inline variable values ─────────────────────── */
+.cm-inline-value {
+    color: rgba(140, 140, 140, 0.8);
+    font-style: italic;
+    font-size: 0.88em;
+    pointer-events: none;
+    user-select: none;
+}
+
+.light-mode .cm-inline-value {
+    color: rgba(100, 100, 100, 0.7);
+}
+
 /* ─── Server heartbeat pulse ────────────────────── */
 .server-pulse {
     width: 7px;

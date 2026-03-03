@@ -22,6 +22,10 @@ extern "C" {
     /// window.__cm_set_annotations(annotationsJson, filePath)
     #[wasm_bindgen(js_namespace = window, js_name = __cm_set_annotations)]
     fn cm_set_annotations(annotations_json: &str, file_path: &str);
+
+    /// window.__cm_set_inline_values(json)
+    #[wasm_bindgen(js_namespace = window, js_name = __cm_set_inline_values)]
+    fn cm_set_inline_values(json: &str);
 }
 
 /// Initialize the CodeMirror editor inside the given DOM element.
@@ -47,4 +51,9 @@ pub fn set_breakpoints(lines_json: &str) {
 /// Push annotations for the current file into the gutter.
 pub fn set_annotations(annotations_json: &str, file_path: &str) {
     cm_set_annotations(annotations_json, file_path);
+}
+
+/// Show inline variable values at specific lines in the editor.
+pub fn set_inline_values(json: &str) {
+    cm_set_inline_values(json);
 }
