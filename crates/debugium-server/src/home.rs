@@ -47,7 +47,6 @@ impl DebugiumHome {
                 // Check if the process is still alive (signal 0 = existence check)
                 #[cfg(unix)]
                 {
-                    use std::os::unix::process::CommandExt;
                     // kill(pid, 0) returns 0 if process exists
                     let alive = unsafe { libc::kill(pid as i32, 0) } == 0;
                     if !alive {

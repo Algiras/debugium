@@ -297,12 +297,12 @@ fn tool_list(adapter_caps: &Value) -> Value {
             },
             {
                 "name": "step_until",
-                "description": "Step over repeatedly until a Python/JS expression evaluates to truthy, or until max_steps is reached. Returns the debug context at the stopping point. Much more efficient than calling step_over + evaluate in a loop.",
+                "description": "Step over repeatedly until a runtime expression evaluates to truthy in the debuggee's language scope (e.g. Python: x > 5, JavaScript: items.length > 0), or until max_steps is reached. The condition is evaluated in the current stack frame — not debugger metadata. Much more efficient than calling step_over + evaluate in a loop.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "session_id": { "type": "string" },
-                        "condition": { "type": "string", "description": "Expression to evaluate after each step (e.g. 'counter.value > 50', 'result != None')." },
+                        "condition": { "type": "string", "description": "Runtime expression in the debuggee's language, evaluated in the current stack frame after each step (e.g. Python: 'x > 5', JavaScript: 'i < arr.length'). Uses variables and syntax of the target language." },
                         "max_steps": { "type": "integer", "description": "Maximum steps before giving up. Default 20." },
                         "thread_id": { "type": "integer", "description": "Thread to step. Default 1." }
                     },

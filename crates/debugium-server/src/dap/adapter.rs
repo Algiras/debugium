@@ -268,6 +268,7 @@ impl AdapterKind {
 /// Information about a spawned adapter process.
 pub struct AdapterProcess {
     pub pid: u32,
+    #[allow(dead_code)]
     pub argv: String,
 }
 

@@ -564,7 +564,7 @@ pub fn App() -> impl IntoView {
                                                 "session": id_state,
                                                 "msg": ev
                                             });
-                                            if let Ok(env) = serde_json::from_value::<WsEnvelope>(envelope) {
+                                            if let Ok(_env) = serde_json::from_value::<WsEnvelope>(envelope) {
                                                 // Get thread from stopped event and request stack
                                                 let thread_id = ev.get("body")
                                                     .and_then(|b| b.get("threadId"))
@@ -2814,7 +2814,7 @@ fn CompletionsDropdown(
     active_session: ReadSignal<Option<String>>,
     session_data: RwSignal<std::collections::HashMap<String, SessionState>>,
     eval_expr: RwSignal<String>,
-    selected: RwSignal<usize>,
+    _selected: RwSignal<usize>,
     show: RwSignal<bool>,
 ) -> impl IntoView {
     let comps_signal = move || {
@@ -3077,7 +3077,7 @@ fn ConsolePanel(
                             active_session=active_session
                             session_data=session_data
                             eval_expr=eval_expr
-                            selected=selected_completion
+                            _selected=selected_completion
                             show=show_completions
                         />
                     </Show>

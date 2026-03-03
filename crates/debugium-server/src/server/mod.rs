@@ -34,7 +34,7 @@ pub async fn start(
         session_counter: Arc::new(AtomicU32::new(1)),
     };
 
-    let static_dir_for_index = static_dir.clone();
+    let _static_dir_for_index = static_dir.clone();
     let app = Router::new()
         .route("/ws", get(routes::ws_handler))
         .route("/source", get(routes::source_handler))
