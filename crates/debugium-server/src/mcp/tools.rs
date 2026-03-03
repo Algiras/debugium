@@ -488,6 +488,12 @@ pub async fn dispatch_tool(
                                         let typ  = v.get("type").and_then(Value::as_str).unwrap_or("");
                                         let child_ref = v.get("variablesReference").and_then(Value::as_u64).unwrap_or(0);
 
+                                        // Skip noisy global scope objects (Node.js `this` = global with 100+ entries)
+                                        if name == "this" && (val.starts_with("global") || val.contains("Window") || typ == "global") {
+                                            locals.insert(name.to_string(), json!(format!("[global scope — {} filtered]", typ)));
+                                            continue;
+                                        }
+
                                         if expand_depth > 0 && child_ref > 0 {
                                             let mut obj = serde_json::Map::new();
                                             if !typ.is_empty() { obj.insert("__type".into(), json!(typ)); }
@@ -646,10 +652,16 @@ pub async fn dispatch_tool(
             // Wait for stop
             let stopped = s.wait_for_stop(timeout).await;
 
-            // Restore original breakpoints (remove temp) if we added one
+            // Remove the temporary breakpoint (re-read current state to avoid clobbering
+            // breakpoints modified by concurrent MCP calls during the continue).
             if !already_has {
-                s.set_breakpoints_with_conditions(file, original_specs.clone()).await.ok();
-                broadcast_breakpoints_changed(hub, session_id, file, &original_specs).await;
+                let current_specs: Vec<BpSpec> = s.breakpoints.read().await
+                    .get(file).cloned().unwrap_or_default();
+                let without_temp: Vec<BpSpec> = current_specs.iter()
+                    .filter(|bp| bp.line != target_line)
+                    .cloned().collect();
+                s.set_breakpoints_with_conditions(file, without_temp.clone()).await.ok();
+                broadcast_breakpoints_changed(hub, session_id, file, &without_temp).await;
             }
 
             match stopped {
@@ -1642,6 +1654,10 @@ pub async fn dispatch_tool(
                 steps += 1;
 
                 final_value = get_value(&s, thread_id, var_name).await;
+                // Treat evaluation failure as "out of scope" rather than a change
+                if final_value == "<error>" && initial_value != "<error>" {
+                    continue;
+                }
                 if final_value != initial_value {
                     changed = true;
                     break;
@@ -1670,11 +1686,13 @@ pub async fn dispatch_tool(
                 }))
                 .unwrap_or(paused_at.unwrap_or(json!(null)));
 
+            let display_from = if initial_value == "<error>" { "<out of scope>".to_string() } else { initial_value };
+            let display_to = if final_value == "<error>" { "<out of scope>".to_string() } else { final_value };
             Ok(serde_json::to_string_pretty(&json!({
                 "changed": changed,
                 "variable": var_name,
-                "from": initial_value,
-                "to": final_value,
+                "from": display_from,
+                "to": display_to,
                 "steps_taken": steps,
                 "paused_at": paused_info
             }))?)
