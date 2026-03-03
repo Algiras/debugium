@@ -140,15 +140,6 @@ pub struct Session {
 }
 
 impl Session {
-    /// Returns true if the adapter declared support for the given capability key.
-    #[allow(dead_code)]
-    pub async fn supports(&self, cap: &str) -> bool {
-        self.capabilities.read().await
-            .get(cap)
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-    }
-
     /// Returns the child client if a child session is attached (e.g. js-debug),
     /// otherwise falls back to the parent client. MCP tools should use this
     /// to route DAP requests to the correct process.
