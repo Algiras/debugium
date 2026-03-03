@@ -1534,3 +1534,55 @@ fn v4_wait_for_output_returns_result() {
     // Must return matched + line fields
     assert!(text.contains("\"matched\""), "V4 expected 'matched' field: {text}");
 }
+
+// ─── W. Memory inspection tools ───────────────────────────────────────────────
+
+#[test]
+fn w1_memory_tools_listed() {
+    let mut p = McpProc::start(7331);
+    p.initialize();
+    let r = p.send("tools/list", Some(serde_json::json!({})));
+    p.stop();
+    let tools_json = serde_json::to_string(&r).unwrap();
+    assert!(tools_json.contains("read_memory"), "read_memory not in tools/list");
+    assert!(tools_json.contains("write_memory"), "write_memory not in tools/list");
+    assert!(tools_json.contains("disassemble"), "disassemble not in tools/list");
+}
+
+#[test]
+fn w2_read_memory_returns_unsupported_for_python() {
+    require_debugpy!();
+    let srv = ServerGuard::launch(7425, Some(43), None);
+    assert!(srv.wait_up(12), "W2 server never started");
+    assert!(srv.wait_paused(12), "W2 session never paused");
+
+    let mut p = McpProc::start(7425);
+    p.initialize();
+    let r = p.tool_call("read_memory", serde_json::json!({
+        "memory_reference": "0x1000"
+    }));
+    p.stop();
+
+    let text = McpProc::text(&r);
+    assert!(r.get("error").is_none(), "W2 unexpected RPC error: {r}");
+    assert!(text.contains("does not support"), "expected unsupported message for Python: {text}");
+}
+
+#[test]
+fn w3_disassemble_returns_unsupported_for_python() {
+    require_debugpy!();
+    let srv = ServerGuard::launch(7427, Some(43), None);
+    assert!(srv.wait_up(12), "W3 server never started");
+    assert!(srv.wait_paused(12), "W3 session never paused");
+
+    let mut p = McpProc::start(7427);
+    p.initialize();
+    let r = p.tool_call("disassemble", serde_json::json!({
+        "memory_reference": "0x1000"
+    }));
+    p.stop();
+
+    let text = McpProc::text(&r);
+    assert!(r.get("error").is_none(), "W3 unexpected RPC error: {r}");
+    assert!(text.contains("does not support"), "expected unsupported message for Python: {text}");
+}

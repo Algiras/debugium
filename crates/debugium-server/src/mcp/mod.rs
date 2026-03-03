@@ -522,6 +522,48 @@ fn tool_list() -> Value {
                 }
             },
             {
+                "name": "read_memory",
+                "description": "Read raw memory from the debuggee process. Primarily for native debugging (C/C++/Rust). Returns hex-encoded bytes. Requires adapter support (supportsReadMemoryRequest).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string" },
+                        "memory_reference": { "type": "string", "description": "Memory reference (hex address or expression). E.g. '0x7fff5fbff8a0' or a variable's memoryReference." },
+                        "offset": { "type": "integer", "description": "Byte offset from the reference. Default: 0." },
+                        "count": { "type": "integer", "description": "Number of bytes to read. Default: 128." }
+                    },
+                    "required": ["memory_reference"]
+                }
+            },
+            {
+                "name": "write_memory",
+                "description": "Write raw bytes to the debuggee's memory. Use with extreme caution. Requires adapter support (supportsWriteMemoryRequest).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string" },
+                        "memory_reference": { "type": "string", "description": "Memory address to write to." },
+                        "offset": { "type": "integer", "description": "Byte offset from the reference. Default: 0." },
+                        "data": { "type": "string", "description": "Base64-encoded bytes to write." }
+                    },
+                    "required": ["memory_reference", "data"]
+                }
+            },
+            {
+                "name": "disassemble",
+                "description": "Disassemble machine instructions at a memory address. Primarily for native debugging. Requires adapter support (supportsDisassembleRequest).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string" },
+                        "memory_reference": { "type": "string", "description": "Memory address to start disassembly." },
+                        "offset": { "type": "integer", "description": "Byte offset. Default: 0." },
+                        "instruction_count": { "type": "integer", "description": "Number of instructions to disassemble. Default: 20." }
+                    },
+                    "required": ["memory_reference"]
+                }
+            },
+            {
                 "name": "launch_session",
                 "description": "Launch a new debug session autonomously. Spawns the debug adapter, connects, sets breakpoints, and waits until the session is paused (or running). Returns the session_id for use with all other tools.",
                 "inputSchema": {
@@ -1725,6 +1767,69 @@ pub async fn dispatch_tool(
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             }
+        }
+
+        // ── Memory inspection ────────────────────────────────────────
+        "read_memory" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
+            let caps = s.get_capabilities().await;
+            if !caps.get("supportsReadMemoryRequest").and_then(Value::as_bool).unwrap_or(false) {
+                return Ok("Adapter does not support readMemory (supportsReadMemoryRequest=false). This feature requires a native debugger like lldb-dap.".to_string());
+            }
+            let mem_ref = args.get("memory_reference").and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("`memory_reference` is required"))?;
+            let offset = args.get("offset").and_then(Value::as_i64).unwrap_or(0);
+            let count = args.get("count").and_then(Value::as_u64).unwrap_or(128);
+
+            let resp = s.client.request("readMemory", Some(json!({
+                "memoryReference": mem_ref,
+                "offset": offset,
+                "count": count,
+            }))).await?;
+            let body = resp.get("body").cloned().unwrap_or(json!(null));
+            Ok(serde_json::to_string_pretty(&body)?)
+        }
+
+        "write_memory" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
+            let caps = s.get_capabilities().await;
+            if !caps.get("supportsWriteMemoryRequest").and_then(Value::as_bool).unwrap_or(false) {
+                return Ok("Adapter does not support writeMemory (supportsWriteMemoryRequest=false).".to_string());
+            }
+            let mem_ref = args.get("memory_reference").and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("`memory_reference` is required"))?;
+            let offset = args.get("offset").and_then(Value::as_i64).unwrap_or(0);
+            let data = args.get("data").and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("`data` (base64) is required"))?;
+
+            let resp = s.client.request("writeMemory", Some(json!({
+                "memoryReference": mem_ref,
+                "offset": offset,
+                "data": data,
+            }))).await?;
+            let written = resp.get("body")
+                .and_then(|b| b.get("bytesWritten")).and_then(Value::as_u64).unwrap_or(0);
+            Ok(format!("Wrote {written} byte(s) to {mem_ref}+{offset}"))
+        }
+
+        "disassemble" => {
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
+            let caps = s.get_capabilities().await;
+            if !caps.get("supportsDisassembleRequest").and_then(Value::as_bool).unwrap_or(false) {
+                return Ok("Adapter does not support disassemble (supportsDisassembleRequest=false).".to_string());
+            }
+            let mem_ref = args.get("memory_reference").and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("`memory_reference` is required"))?;
+            let offset = args.get("offset").and_then(Value::as_i64).unwrap_or(0);
+            let count = args.get("instruction_count").and_then(Value::as_u64).unwrap_or(20);
+
+            let resp = s.client.request("disassemble", Some(json!({
+                "memoryReference": mem_ref,
+                "offset": offset,
+                "instructionCount": count,
+            }))).await?;
+            let body = resp.get("body").cloned().unwrap_or(json!(null));
+            Ok(serde_json::to_string_pretty(&body)?)
         }
 
         // ── Session lifecycle ─────────────────────────────────────
