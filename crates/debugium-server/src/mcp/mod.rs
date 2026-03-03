@@ -293,6 +293,21 @@ fn tool_list() -> Value {
                 }
             },
             {
+                "name": "continue_until",
+                "description": "Run to a specific line (like 'run to cursor'). Sets a temporary breakpoint at the target line, continues execution, waits for the stop, then removes the temporary breakpoint and returns the debug context. Much faster than manually managing breakpoints.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string" },
+                        "file": { "type": "string", "description": "Absolute path to the source file." },
+                        "line": { "type": "integer", "description": "Line number to run to (1-indexed)." },
+                        "thread_id": { "type": "integer", "description": "Thread to continue. Default 1." },
+                        "timeout_secs": { "type": "integer", "description": "Max seconds to wait for the stop. Default 15." }
+                    },
+                    "required": ["file", "line"]
+                }
+            },
+            {
                 "name": "run_until_exception",
                 "description": "Continue execution until an exception is raised, then return full debug context at the crash site. Sets 'raised' exception breakpoints, continues, and returns the exception info + locals in one call.",
                 "inputSchema": {
@@ -1464,6 +1479,60 @@ pub async fn dispatch_tool(
             };
             if let Ok(j) = serde_json::to_string(&env) { hub.broadcast(session_id, j).await; }
             Ok(format!("[{}] {}", level, message))
+        }
+
+        "continue_until" => {
+            use crate::dap::session::BpSpec;
+            let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
+            let file = args.get("file").and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("`file` is required"))?;
+            let target_line = require_u32(&args, "line")?;
+            let thread_id = args.get("thread_id").and_then(Value::as_u64).unwrap_or(1) as u32;
+            let timeout = args.get("timeout_secs").and_then(Value::as_u64).unwrap_or(15);
+
+            // Save existing breakpoints for this file
+            let original_specs: Vec<BpSpec> = s.breakpoints.read().await
+                .get(file).cloned().unwrap_or_default();
+
+            // Add the target line as a temporary breakpoint
+            let mut with_temp = original_specs.clone();
+            let already_has = with_temp.iter().any(|bp| bp.line == target_line);
+            if !already_has {
+                with_temp.push(BpSpec { line: target_line, condition: None, hit_condition: None, log_message: None });
+            }
+            s.set_breakpoints_with_conditions(file, with_temp).await?;
+
+            // Continue execution
+            s.client.request("continue", Some(json!({ "threadId": thread_id }))).await?;
+
+            // Wait for stop
+            let stopped = s.wait_for_stop(timeout).await;
+
+            // Restore original breakpoints (remove temp) if we added one
+            if !already_has {
+                s.set_breakpoints_with_conditions(file, original_specs.clone()).await.ok();
+                broadcast_breakpoints_changed(hub, session_id, file, &original_specs).await;
+            }
+
+            match stopped {
+                Ok(_) => {
+                    // Build a compact context summary inline
+                    let stack_resp = s.client.request("stackTrace",
+                        Some(json!({ "threadId": thread_id, "startFrame": 0, "levels": 3 }))).await.ok();
+                    let top = stack_resp.as_ref()
+                        .and_then(|r| r.get("body")).and_then(|b| b.get("stackFrames"))
+                        .and_then(Value::as_array).and_then(|a| a.first());
+                    let actual_file = top.and_then(|f| f.get("source")).and_then(|s| s.get("path"))
+                        .and_then(Value::as_str).unwrap_or("?");
+                    let actual_line = top.and_then(|f| f.get("line")).and_then(Value::as_u64).unwrap_or(0);
+                    let func_name = top.and_then(|f| f.get("name")).and_then(Value::as_str).unwrap_or("?");
+                    let short = actual_file.split('/').last().unwrap_or(actual_file);
+                    Ok(format!("Stopped at {short}:{actual_line} in {func_name}(). Call get_debug_context for full state."))
+                }
+                Err(_) => {
+                    Ok(format!("Timed out after {timeout}s waiting to reach {file}:{target_line}. The program may still be running."))
+                }
+            }
         }
 
         "step_until" => {
