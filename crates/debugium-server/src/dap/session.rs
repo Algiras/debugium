@@ -134,6 +134,9 @@ pub struct Session {
     /// Fires when the session terminates (exited/terminated DAP event).
     /// Listeners can clean up (e.g. remove from registry).
     pub terminated_tx: Arc<tokio::sync::watch::Sender<bool>>,
+    /// Child DAP client for multi-process adapters (e.g. js-debug).
+    /// When set, MCP tools should route requests here instead of `client`.
+    pub child_client: RwLock<Option<Arc<DapClient>>>,
 }
 
 impl Session {
@@ -144,6 +147,17 @@ impl Session {
             .get(cap)
             .and_then(Value::as_bool)
             .unwrap_or(false)
+    }
+
+    /// Returns the child client if a child session is attached (e.g. js-debug),
+    /// otherwise falls back to the parent client. MCP tools should use this
+    /// to route DAP requests to the correct process.
+    pub async fn active_client(&self) -> Arc<DapClient> {
+        if let Some(c) = self.child_client.read().await.as_ref() {
+            c.clone()
+        } else {
+            self.client.clone()
+        }
     }
 }
 
@@ -214,6 +228,7 @@ impl Session {
             watch_results: RwLock::new(Vec::new()),
             data_breakpoints: RwLock::new(Vec::new()),
             terminated_tx: terminated_tx.clone(),
+            child_client: RwLock::new(None),
         });
 
         // Spawn event dispatcher: handles initialized signal + enriches stopped events
@@ -258,8 +273,9 @@ impl Session {
                             cfg.get("port").and_then(Value::as_u64).map(|p| p as u16)
                         });
                         if let Some(port) = port_opt {
+                            let sess = session_for_bps.clone();
                             tokio::spawn(async move {
-                                if let Err(e) = attach_child_session(port, cfg, h, s, st, ls, sd, bps).await {
+                                if let Err(e) = attach_child_session(port, cfg, h, s, st, ls, sd, bps, sess).await {
                                     warn!("child session error: {e}");
                                 }
                             });
@@ -322,8 +338,9 @@ impl Session {
                             let sid_c = session_id.clone();
                             let stopped_c = stopped_tx2.clone();
                             let last_c = last_stopped2.clone();
+                            let sess_c = session2.clone();
                             tokio::spawn(async move {
-                                if let Err(e) = attach_debugpy_child(host, child_port, attach_config, hub_c, sid_c, stopped_c, last_c).await {
+                                if let Err(e) = attach_debugpy_child(host, child_port, attach_config, hub_c, sid_c, stopped_c, last_c, sess_c).await {
                                     warn!("debugpy child attach error: {e}");
                                 }
                             });
@@ -434,6 +451,7 @@ impl Session {
             watch_results: RwLock::new(Vec::new()),
             data_breakpoints: RwLock::new(Vec::new()),
             terminated_tx: terminated_tx.clone(),
+            child_client: RwLock::new(None),
         });
 
         // Event dispatcher
@@ -712,7 +730,7 @@ impl Session {
                 obj
             }).collect::<Vec<_>>()
         });
-        let resp = self.client.request("setBreakpoints", Some(args)).await?;
+        let resp = self.active_client().await.request("setBreakpoints", Some(args)).await?;
         // Extract lines from DAP response, falling back to input specs when the adapter
         // doesn't echo back a line (e.g. js-debug returns provisional breakpoints without
         // a line field).
@@ -756,10 +774,9 @@ async fn attach_child_session(
     session_id: String,
     stopped_tx: Arc<tokio::sync::watch::Sender<u32>>,
     last_stopped: Arc<RwLock<Option<Value>>>,
-    // Shared work-queue: push child configs here when startDebugging arrives.
     sd_tx: mpsc::Sender<Value>,
-    // Parent session's breakpoints to forward to the child session.
     parent_breakpoints: HashMap<String, Vec<BpSpec>>,
+    parent_session: Arc<Session>,
 ) -> Result<()> {
     let pending_id = child_config["__pendingTargetId"]
         .as_str().unwrap_or("?").to_string();
@@ -834,11 +851,15 @@ async fn attach_child_session(
     child_client.notify("configurationDone", None).await
         .context("child configurationDone")?;
 
+    // Store child client on the parent session so MCP tools route requests here.
+    *parent_session.child_client.write().await = Some(child_client.clone());
+
     info!("[{session_id}] Child session attached, waiting for events");
 
     // Forward events from the child session to the hub
     let hub2 = hub;
     let sid = session_id;
+    let parent_sess = parent_session;
     tokio::spawn(async move {
         // js-debug sends a second `initialized` after connecting to the real V8 target.
         // We must respond with configurationDone so it activates the debugger (enables
@@ -867,11 +888,21 @@ async fn attach_child_session(
                     let reason = event.get("body").and_then(|b| b.get("reason"))
                         .and_then(|v| v.as_str()).unwrap_or("").to_string();
                     broadcast_json(&hub2, &sid, event.clone()).await;
-                    enrich_stopped(&hub2, &child_client, &sid, None, thread_id, &reason).await;
+                    enrich_stopped(&hub2, &child_client, &sid, Some(&parent_sess), thread_id, &reason).await;
                 } else if ev_name == "continued" {
                     *last_stopped.write().await = None;
                     broadcast_json(&hub2, &sid, event.clone()).await;
                 } else {
+                    if ev_name == "output" {
+                        if let Some(output) = event.get("body").and_then(|b| b.get("output")).and_then(Value::as_str) {
+                            let line = output.trim_end_matches('\n').to_string();
+                            if !line.is_empty() {
+                                let mut buf = parent_sess.console_lines.write().await;
+                                buf.push_back(line);
+                                if buf.len() > 500 { buf.pop_front(); }
+                            }
+                        }
+                    }
                     broadcast_json(&hub2, &sid, event).await;
                 }
             } else if ev_type == "reverse_request_ack" {
@@ -912,6 +943,7 @@ async fn attach_debugpy_child(
     session_id: String,
     stopped_tx: Arc<tokio::sync::watch::Sender<u32>>,
     last_stopped: Arc<RwLock<Option<Value>>>,
+    parent_session: Arc<Session>,
 ) -> Result<()> {
     // Give the adapter a moment to register the child target
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -952,11 +984,15 @@ async fn attach_debugpy_child(
         }
     }
 
+    // Store child client so MCP tools route requests to the child process.
+    *parent_session.child_client.write().await = Some(child_client.clone());
+
     info!("[{session_id}] Child debugpy attached, forwarding events");
 
     // 4. Forward child events to hub under parent session ID
     let hub2 = hub;
     let sid = session_id;
+    let parent_sess = parent_session;
     tokio::spawn(async move {
         while let Some(event) = child_event_rx.recv().await {
             let ev_name = event.get("event").and_then(|v| v.as_str()).unwrap_or("?");
@@ -970,11 +1006,21 @@ async fn attach_debugpy_child(
                 let reason = event.get("body").and_then(|b| b.get("reason"))
                     .and_then(Value::as_str).unwrap_or("").to_string();
                 broadcast_json(&hub2, &sid, event.clone()).await;
-                enrich_stopped(&hub2, &child_client, &sid, None, thread_id, &reason).await;
+                enrich_stopped(&hub2, &child_client, &sid, Some(&parent_sess), thread_id, &reason).await;
             } else if ev_name == "continued" {
                 *last_stopped.write().await = None;
                 broadcast_json(&hub2, &sid, event).await;
             } else {
+                if ev_name == "output" {
+                    if let Some(output) = event.get("body").and_then(|b| b.get("output")).and_then(Value::as_str) {
+                        let line = output.trim_end_matches('\n').to_string();
+                        if !line.is_empty() {
+                            let mut buf = parent_sess.console_lines.write().await;
+                            buf.push_back(line);
+                            if buf.len() > 500 { buf.pop_front(); }
+                        }
+                    }
+                }
                 broadcast_json(&hub2, &sid, event).await;
             }
         }
@@ -1077,7 +1123,7 @@ async fn enrich_stopped(
         }
     }
 
-    // 5. Timeline entry — only when session is provided (not for child sessions)
+    // 5. Timeline entry — record stop in session timeline for history/diff tools
     if let Some(sess) = session {
         // Diff vars against the last timeline entry
         let prev_vars = sess.timeline.read().await

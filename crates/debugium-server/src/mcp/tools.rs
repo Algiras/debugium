@@ -127,7 +127,7 @@ pub async fn dispatch_tool(
             broadcast_command(hub, session_id, "continue").await;
             // Capture line count BEFORE continuing so the LLM can pass it to wait_for_output.
             let console_line_count = s.console_lines.read().await.len();
-            s.client.request("continue", Some(json!({ "threadId": thread_id }))).await?;
+            s.active_client().await.request("continue", Some(json!({ "threadId": thread_id }))).await?;
             Ok(serde_json::to_string_pretty(&json!({
                 "status": "running",
                 "console_line_count": console_line_count,
@@ -140,7 +140,7 @@ pub async fn dispatch_tool(
             let thread_id = require_u32(&args, "thread_id")?;
             broadcast_command(hub, session_id, "next").await;
             let mut stopped_rx = s.stopped_tx.subscribe();
-            s.client.request("next", Some(json!({ "threadId": thread_id }))).await?;
+            s.active_client().await.request("next", Some(json!({ "threadId": thread_id }))).await?;
             let loc = await_stopped(&s, &mut stopped_rx).await;
             Ok(format!("Stepped over → {loc}"))
         }
@@ -150,7 +150,7 @@ pub async fn dispatch_tool(
             let thread_id = require_u32(&args, "thread_id")?;
             broadcast_command(hub, session_id, "stepIn").await;
             let mut stopped_rx = s.stopped_tx.subscribe();
-            s.client.request("stepIn", Some(json!({ "threadId": thread_id }))).await?;
+            s.active_client().await.request("stepIn", Some(json!({ "threadId": thread_id }))).await?;
             let loc = await_stopped(&s, &mut stopped_rx).await;
             Ok(format!("Stepped in → {loc}"))
         }
@@ -160,7 +160,7 @@ pub async fn dispatch_tool(
             let thread_id = require_u32(&args, "thread_id")?;
             broadcast_command(hub, session_id, "stepOut").await;
             let mut stopped_rx = s.stopped_tx.subscribe();
-            s.client.request("stepOut", Some(json!({ "threadId": thread_id }))).await?;
+            s.active_client().await.request("stepOut", Some(json!({ "threadId": thread_id }))).await?;
             let loc = await_stopped(&s, &mut stopped_rx).await;
             Ok(format!("Stepped out → {loc}"))
         }
@@ -169,7 +169,7 @@ pub async fn dispatch_tool(
             let s = session.ok_or_else(|| anyhow::anyhow!("Session not found"))?;
             let thread_id = require_u32(&args, "thread_id")?;
             broadcast_command(hub, session_id, "pause").await;
-            let resp = s.client.request("pause", Some(json!({ "threadId": thread_id }))).await?;
+            let resp = s.active_client().await.request("pause", Some(json!({ "threadId": thread_id }))).await?;
             Ok(format!("Paused thread {thread_id}\n{}", serde_json::to_string_pretty(&resp)?))
         }
 
@@ -177,7 +177,7 @@ pub async fn dispatch_tool(
         "get_threads" => {
             let s = session.ok_or_else(|| anyhow::anyhow!("Session not found"))?;
             broadcast_command(hub, session_id, "threads").await;
-            let resp = s.client.request("threads", None).await?;
+            let resp = s.active_client().await.request("threads", None).await?;
             let threads = resp.get("body").and_then(|b| b.get("threads")).cloned().unwrap_or(Value::Null);
             Ok(serde_json::to_string_pretty(&threads)?)
         }
@@ -191,7 +191,7 @@ pub async fn dispatch_tool(
             };
             let depth = args.get("depth").and_then(Value::as_u64).unwrap_or(20);
             broadcast_command(hub, session_id, "stackTrace").await;
-            let resp = s.client.request("stackTrace", Some(json!({
+            let resp = s.active_client().await.request("stackTrace", Some(json!({
                 "threadId": thread_id, "startFrame": 0, "levels": depth
             }))).await?;
             let frames = resp.get("body").and_then(|b| b.get("stackFrames")).cloned().unwrap_or(Value::Null);
@@ -202,7 +202,7 @@ pub async fn dispatch_tool(
             let s = session.ok_or_else(|| anyhow::anyhow!("Session not found"))?;
             let frame_id = require_u32(&args, "frame_id")?;
             broadcast_command(hub, session_id, "scopes").await;
-            let resp = s.client.request("scopes", Some(json!({ "frameId": frame_id }))).await?;
+            let resp = s.active_client().await.request("scopes", Some(json!({ "frameId": frame_id }))).await?;
             let scopes = resp.get("body").and_then(|b| b.get("scopes")).cloned().unwrap_or(Value::Null);
             Ok(serde_json::to_string_pretty(&scopes)?)
         }
@@ -211,7 +211,7 @@ pub async fn dispatch_tool(
             let s = session.ok_or_else(|| anyhow::anyhow!("Session not found"))?;
             let vref = require_u32(&args, "variables_reference")?;
             broadcast_command(hub, session_id, "variables").await;
-            let resp = s.client.request("variables", Some(json!({ "variablesReference": vref }))).await?;
+            let resp = s.active_client().await.request("variables", Some(json!({ "variablesReference": vref }))).await?;
             let vars = resp.get("body").and_then(|b| b.get("variables")).cloned().unwrap_or(Value::Null);
             Ok(serde_json::to_string_pretty(&vars)?)
         }
@@ -225,7 +225,7 @@ pub async fn dispatch_tool(
                 v as u32
             } else {
                 let tid = paused_thread_id(&s).await;
-                let st = s.client.request("stackTrace", Some(json!({
+                let st = s.active_client().await.request("stackTrace", Some(json!({
                     "threadId": tid, "startFrame": 0, "levels": 1
                 }))).await?;
                 st.get("body").and_then(|b| b["stackFrames"].as_array())
@@ -234,7 +234,7 @@ pub async fn dispatch_tool(
                     .unwrap_or(1) as u32
             };
             let context = args.get("context").and_then(Value::as_str).unwrap_or("repl");
-            let resp = s.client.request("evaluate", Some(json!({
+            let resp = s.active_client().await.request("evaluate", Some(json!({
                 "expression": expr,
                 "frameId": frame_id,
                 "context": context
@@ -276,13 +276,13 @@ pub async fn dispatch_tool(
         // ── Lifecycle ──────────────────────────────────────────────────
         "terminate" => {
             let s = session.ok_or_else(|| anyhow::anyhow!("Session not found"))?;
-            let resp = s.client.request("terminate", Some(json!({ "restart": false }))).await?;
+            let resp = s.active_client().await.request("terminate", Some(json!({ "restart": false }))).await?;
             Ok(format!("Terminate requested.\n{}", serde_json::to_string_pretty(&resp)?))
         }
 
         "restart" => {
             let s = session.ok_or_else(|| anyhow::anyhow!("Session not found"))?;
-            s.client.notify("restart", None).await?;
+            s.active_client().await.notify("restart", None).await?;
             Ok("Restart requested.".to_string())
         }
 
@@ -293,7 +293,7 @@ pub async fn dispatch_tool(
                 .iter()
                 .filter_map(|v| v.as_str().map(str::to_string))
                 .collect();
-            let resp = s.client.request("setExceptionBreakpoints", Some(json!({ "filters": filters }))).await?;
+            let resp = s.active_client().await.request("setExceptionBreakpoints", Some(json!({ "filters": filters }))).await?;
             Ok(format!("Exception breakpoints set: {:?}\n{}", filters, serde_json::to_string_pretty(&resp)?))
         }
 
@@ -318,7 +318,7 @@ pub async fn dispatch_tool(
             // 1. Query adapter for data breakpoint info (with timeout)
             let info_result = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                s.client.request("dataBreakpointInfo", Some(json!({
+                s.active_client().await.request("dataBreakpointInfo", Some(json!({
                     "variablesReference": vref,
                     "name": name
                 })))
@@ -356,7 +356,7 @@ pub async fn dispatch_tool(
                 }).collect();
                 drop(dbps);
 
-                let resp = s.client.request("setDataBreakpoints", Some(json!({
+                let resp = s.active_client().await.request("setDataBreakpoints", Some(json!({
                     "breakpoints": bp_args
                 }))).await?;
 
@@ -386,7 +386,7 @@ pub async fn dispatch_tool(
             let count = s.data_breakpoints.read().await.len();
             s.data_breakpoints.write().await.clear();
             if supports_data_bp {
-                s.client.request("setDataBreakpoints", Some(json!({ "breakpoints": [] }))).await?;
+                s.active_client().await.request("setDataBreakpoints", Some(json!({ "breakpoints": [] }))).await?;
             }
             Ok(format!("Cleared {count} data breakpoint(s)."))
         }
@@ -400,7 +400,7 @@ pub async fn dispatch_tool(
         "get_exception_info" => {
             let s = session.ok_or_else(|| anyhow::anyhow!("Session not found"))?;
             let thread_id = require_u32(&args, "thread_id")?;
-            let resp = s.client.request("exceptionInfo", Some(json!({ "threadId": thread_id }))).await?;
+            let resp = s.active_client().await.request("exceptionInfo", Some(json!({ "threadId": thread_id }))).await?;
             let body = resp.get("body").cloned().unwrap_or(Value::Null);
             Ok(serde_json::to_string_pretty(&body)?)
         }
@@ -412,7 +412,7 @@ pub async fn dispatch_tool(
                 .ok_or_else(|| anyhow::anyhow!("`name` is required"))?;
             let value = args.get("value").and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("`value` is required"))?;
-            let resp = s.client.request("setVariable", Some(json!({
+            let resp = s.active_client().await.request("setVariable", Some(json!({
                 "variablesReference": vref,
                 "name": name,
                 "value": value
@@ -428,7 +428,7 @@ pub async fn dispatch_tool(
                 .filter_map(Value::as_str)
                 .collect();
             let bps: Vec<Value> = names.iter().map(|n| json!({ "name": n })).collect();
-            let resp = s.client.request("setFunctionBreakpoints", Some(json!({ "breakpoints": bps }))).await?;
+            let resp = s.active_client().await.request("setFunctionBreakpoints", Some(json!({ "breakpoints": bps }))).await?;
             Ok(format!("Function breakpoints set: {:?}\n{}", names, serde_json::to_string_pretty(&resp)?))
         }
 
@@ -446,7 +446,7 @@ pub async fn dispatch_tool(
             let expand_depth = args.get("expand_depth").and_then(Value::as_u64).unwrap_or(1) as usize;
 
             // 1. stack trace
-            let stack_resp = s.client.request("stackTrace", Some(json!({
+            let stack_resp = s.active_client().await.request("stackTrace", Some(json!({
                 "threadId": thread_id, "startFrame": 0, "levels": max_frames
             }))).await?;
             let frames = stack_resp.get("body").and_then(|b| b.get("stackFrames"))
@@ -467,7 +467,7 @@ pub async fn dispatch_tool(
 
             // 2. scopes → locals with auto-expansion
             let mut locals = serde_json::Map::new();
-            if let Ok(scopes_resp) = s.client.request("scopes", Some(json!({ "frameId": frame_id }))).await {
+            if let Ok(scopes_resp) = s.active_client().await.request("scopes", Some(json!({ "frameId": frame_id }))).await {
                 let scopes = scopes_resp.get("body").and_then(|b| b.get("scopes"))
                     .and_then(Value::as_array).cloned().unwrap_or_default();
                 let locals_scope = scopes.iter().find(|sc| {
@@ -478,7 +478,7 @@ pub async fn dispatch_tool(
                 if let Some(sc) = locals_scope {
                     if let Some(vref) = sc.get("variablesReference").and_then(Value::as_u64) {
                         if vref > 0 {
-                            if let Ok(vars_resp) = s.client.request("variables",
+                            if let Ok(vars_resp) = s.active_client().await.request("variables",
                                 Some(json!({ "variablesReference": vref }))).await {
                                 if let Some(vars) = vars_resp.get("body").and_then(|b| b.get("variables"))
                                     .and_then(Value::as_array) {
@@ -492,7 +492,7 @@ pub async fn dispatch_tool(
                                             let mut obj = serde_json::Map::new();
                                             if !typ.is_empty() { obj.insert("__type".into(), json!(typ)); }
                                             obj.insert("__value".into(), json!(val));
-                                            if let Ok(child_resp) = s.client.request("variables",
+                                            if let Ok(child_resp) = s.active_client().await.request("variables",
                                                 Some(json!({ "variablesReference": child_ref }))).await {
                                                 if let Some(children) = child_resp.get("body")
                                                     .and_then(|b| b.get("variables")).and_then(Value::as_array) {
@@ -641,7 +641,7 @@ pub async fn dispatch_tool(
             s.set_breakpoints_with_conditions(file, with_temp).await?;
 
             // Continue execution
-            s.client.request("continue", Some(json!({ "threadId": thread_id }))).await?;
+            s.active_client().await.request("continue", Some(json!({ "threadId": thread_id }))).await?;
 
             // Wait for stop
             let stopped = s.wait_for_stop(timeout).await;
@@ -655,7 +655,7 @@ pub async fn dispatch_tool(
             match stopped {
                 Ok(_) => {
                     // Build a compact context summary inline
-                    let stack_resp = s.client.request("stackTrace",
+                    let stack_resp = s.active_client().await.request("stackTrace",
                         Some(json!({ "threadId": thread_id, "startFrame": 0, "levels": 3 }))).await.ok();
                     let top = stack_resp.as_ref()
                         .and_then(|r| r.get("body")).and_then(|b| b.get("stackFrames"))
@@ -683,19 +683,19 @@ pub async fn dispatch_tool(
             let mut steps = 0;
             let mut hit = false;
             while steps < max_steps {
-                s.client.request("next", Some(json!({ "threadId": thread_id }))).await?;
+                s.active_client().await.request("next", Some(json!({ "threadId": thread_id }))).await?;
                 s.wait_for_stop(15).await?;
                 steps += 1;
 
                 // Get top frame id for evaluate
-                let frame_id = s.client.request("stackTrace",
+                let frame_id = s.active_client().await.request("stackTrace",
                     Some(json!({ "threadId": thread_id, "startFrame": 0, "levels": 1 }))).await
                     .ok()
                     .and_then(|r| r.get("body")?.get("stackFrames")?.as_array()?.first().cloned())
                     .and_then(|f| f.get("id")?.as_u64())
                     .unwrap_or(1) as u32;
 
-                let eval = s.client.request("evaluate", Some(json!({
+                let eval = s.active_client().await.request("evaluate", Some(json!({
                     "expression": condition,
                     "frameId": frame_id,
                     "context": "watch"
@@ -722,11 +722,11 @@ pub async fn dispatch_tool(
             if let Ok(caps) = s.get_capabilities().await.get("exceptionBreakpointFilters")
                 .and_then(Value::as_array).map(|a| !a.is_empty()).ok_or(()) {
                 if caps {
-                    s.client.request("setExceptionBreakpoints",
+                    s.active_client().await.request("setExceptionBreakpoints",
                         Some(json!({ "filters": ["raised"] }))).await.ok();
                 }
             } else {
-                s.client.request("setExceptionBreakpoints",
+                s.active_client().await.request("setExceptionBreakpoints",
                     Some(json!({ "filters": ["raised"] }))).await.ok();
             }
 
@@ -745,7 +745,7 @@ pub async fn dispatch_tool(
                 .map(|r| r == "exception")
                 .unwrap_or(false);
             if !already_at_exception {
-                s.client.request("continue", Some(json!({ "threadId": thread_id }))).await?;
+                s.active_client().await.request("continue", Some(json!({ "threadId": thread_id }))).await?;
                 s.wait_for_stop(timeout).await?;
             }
 
@@ -753,7 +753,7 @@ pub async fn dispatch_tool(
             let ctx_args = json!({ "session_id": session_id, "thread_id": thread_id });
             let ctx_name = "get_debug_context";
             // Inline: get stack + scopes + vars
-            let stack_resp = s.client.request("stackTrace",
+            let stack_resp = s.active_client().await.request("stackTrace",
                 Some(json!({ "threadId": thread_id, "startFrame": 0, "levels": 10 }))).await?;
             let frames = stack_resp.get("body").and_then(|b| b.get("stackFrames"))
                 .and_then(Value::as_array).cloned().unwrap_or_default();
@@ -765,7 +765,7 @@ pub async fn dispatch_tool(
             let func = top.and_then(|f| f.get("name")).and_then(Value::as_str).unwrap_or("?").to_string();
 
             // Exception info
-            let exc_info = s.client.request("exceptionInfo",
+            let exc_info = s.active_client().await.request("exceptionInfo",
                 Some(json!({ "threadId": thread_id }))).await
                 .ok()
                 .and_then(|r| r.get("body").cloned())
@@ -796,12 +796,12 @@ pub async fn dispatch_tool(
             };
 
             // 1. Exception info
-            let exc_info = s.client.request("exceptionInfo",
+            let exc_info = s.active_client().await.request("exceptionInfo",
                 Some(json!({ "threadId": thread_id }))).await
                 .ok().and_then(|r| r.get("body").cloned()).unwrap_or(json!(null));
 
             // 2. Stack trace
-            let stack_resp = s.client.request("stackTrace",
+            let stack_resp = s.active_client().await.request("stackTrace",
                 Some(json!({ "threadId": thread_id, "startFrame": 0, "levels": 20 }))).await?;
             let frames = stack_resp.get("body").and_then(|b| b.get("stackFrames"))
                 .and_then(Value::as_array).cloned().unwrap_or_default();
@@ -821,7 +821,7 @@ pub async fn dispatch_tool(
 
             // 3. Locals
             let mut locals = serde_json::Map::new();
-            if let Ok(scopes_resp) = s.client.request("scopes", Some(json!({ "frameId": frame_id }))).await {
+            if let Ok(scopes_resp) = s.active_client().await.request("scopes", Some(json!({ "frameId": frame_id }))).await {
                 let scopes = scopes_resp.get("body").and_then(|b| b.get("scopes"))
                     .and_then(Value::as_array).cloned().unwrap_or_default();
                 let locals_scope = scopes.iter().find(|sc| {
@@ -832,7 +832,7 @@ pub async fn dispatch_tool(
                 if let Some(sc) = locals_scope {
                     if let Some(vref) = sc.get("variablesReference").and_then(Value::as_u64) {
                         if vref > 0 {
-                            if let Ok(vars_resp) = s.client.request("variables",
+                            if let Ok(vars_resp) = s.active_client().await.request("variables",
                                 Some(json!({ "variablesReference": vref }))).await {
                                 if let Some(vars) = vars_resp.get("body").and_then(|b| b.get("variables"))
                                     .and_then(Value::as_array) {
@@ -918,7 +918,7 @@ pub async fn dispatch_tool(
         "disconnect" => {
             let terminate = args.get("terminate_debuggee").and_then(Value::as_bool).unwrap_or(true);
             if let Some(s) = session {
-                let resp = s.client.request("disconnect", Some(json!({ "terminateDebuggee": terminate }))).await?;
+                let resp = s.active_client().await.request("disconnect", Some(json!({ "terminateDebuggee": terminate }))).await?;
                 Ok(format!("Disconnected.\n{}", serde_json::to_string_pretty(&resp)?))
             } else {
                 Ok("No active session to disconnect.".to_string())
@@ -1265,7 +1265,7 @@ pub async fn dispatch_tool(
             let offset = args.get("offset").and_then(Value::as_i64).unwrap_or(0);
             let count = args.get("count").and_then(Value::as_u64).unwrap_or(128);
 
-            let resp = s.client.request("readMemory", Some(json!({
+            let resp = s.active_client().await.request("readMemory", Some(json!({
                 "memoryReference": mem_ref,
                 "offset": offset,
                 "count": count,
@@ -1286,7 +1286,7 @@ pub async fn dispatch_tool(
             let data = args.get("data").and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("`data` (base64) is required"))?;
 
-            let resp = s.client.request("writeMemory", Some(json!({
+            let resp = s.active_client().await.request("writeMemory", Some(json!({
                 "memoryReference": mem_ref,
                 "offset": offset,
                 "data": data,
@@ -1307,7 +1307,7 @@ pub async fn dispatch_tool(
             let offset = args.get("offset").and_then(Value::as_i64).unwrap_or(0);
             let count = args.get("instruction_count").and_then(Value::as_u64).unwrap_or(20);
 
-            let resp = s.client.request("disassemble", Some(json!({
+            let resp = s.active_client().await.request("disassemble", Some(json!({
                 "memoryReference": mem_ref,
                 "offset": offset,
                 "instructionCount": count,
@@ -1425,7 +1425,7 @@ pub async fn dispatch_tool(
             let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
 
             // Send disconnect to adapter
-            let _ = s.client.request("disconnect", Some(json!({ "terminateDebuggee": true }))).await;
+            let _ = s.active_client().await.request("disconnect", Some(json!({ "terminateDebuggee": true }))).await;
 
             // Kill adapter process if we have a PID
             if let Some(meta) = s.meta.read().await.as_ref() {
@@ -1541,7 +1541,7 @@ pub async fn dispatch_tool(
                 paused_thread_id(&s).await
             };
             broadcast_command(hub, session_id, "stackTrace").await;
-            let stack_resp = s.client.request("stackTrace", Some(json!({
+            let stack_resp = s.active_client().await.request("stackTrace", Some(json!({
                 "threadId": thread_id, "startFrame": 0, "levels": max_depth
             }))).await?;
             let frames = stack_resp.get("body").and_then(|b| b.get("stackFrames"))
@@ -1557,7 +1557,7 @@ pub async fn dispatch_tool(
 
                 // Fetch locals for this frame
                 let mut locals = serde_json::Map::new();
-                if let Ok(scopes_resp) = s.client.request("scopes",
+                if let Ok(scopes_resp) = s.active_client().await.request("scopes",
                     Some(json!({ "frameId": frame_id }))).await {
                     let scopes = scopes_resp.get("body").and_then(|b| b.get("scopes"))
                         .and_then(Value::as_array).cloned().unwrap_or_default();
@@ -1569,7 +1569,7 @@ pub async fn dispatch_tool(
                     if let Some(sc) = locals_scope {
                         if let Some(vref) = sc.get("variablesReference").and_then(Value::as_u64) {
                             if vref > 0 {
-                                if let Ok(vars_resp) = s.client.request("variables",
+                                if let Ok(vars_resp) = s.active_client().await.request("variables",
                                     Some(json!({ "variablesReference": vref }))).await {
                                     if let Some(vars) = vars_resp.get("body")
                                         .and_then(|b| b.get("variables"))
@@ -1612,13 +1612,13 @@ pub async fn dispatch_tool(
                 let s = s.clone();
                 let expr = expr.to_string();
                 async move {
-                    let st = s.client.request("stackTrace",
+                    let st = s.active_client().await.request("stackTrace",
                         Some(json!({ "threadId": tid, "startFrame": 0, "levels": 1 }))).await;
                     let frame_id = st.ok()
                         .and_then(|r| r.get("body")?.get("stackFrames")?.as_array()?.first().cloned())
                         .and_then(|f| f.get("id")?.as_u64())
                         .unwrap_or(1) as u32;
-                    s.client.request("evaluate", Some(json!({
+                    s.active_client().await.request("evaluate", Some(json!({
                         "expression": expr,
                         "frameId": frame_id,
                         "context": "watch"
@@ -1637,7 +1637,7 @@ pub async fn dispatch_tool(
             let mut changed = false;
             while steps < max_steps {
                 let mut stopped_rx = s.stopped_tx.subscribe();
-                s.client.request("next", Some(json!({ "threadId": thread_id }))).await?;
+                s.active_client().await.request("next", Some(json!({ "threadId": thread_id }))).await?;
                 await_stopped(&s, &mut stopped_rx).await;
                 steps += 1;
 
@@ -1659,7 +1659,7 @@ pub async fn dispatch_tool(
             drop(loc);
 
             // Get actual location via stack trace (best-effort)
-            let paused_info = s.client.request("stackTrace",
+            let paused_info = s.active_client().await.request("stackTrace",
                 Some(json!({ "threadId": thread_id, "startFrame": 0, "levels": 1 }))).await
                 .ok()
                 .and_then(|r| r.get("body")?.get("stackFrames")?.as_array()?.first().cloned())
