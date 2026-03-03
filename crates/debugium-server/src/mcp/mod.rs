@@ -1014,7 +1014,7 @@ async fn handle_request(
     hub: &Arc<Hub>,
     proxy_port: Option<u16>,
     client_caps: &Arc<tokio::sync::RwLock<ClientCapabilities>>,
-    _mcp_ctx: &McpContext,
+    mcp_ctx: &McpContext,
 ) -> RpcResponse {
     let id = req.id.clone();
     match req.method.as_str() {
@@ -1090,7 +1090,15 @@ async fn handle_request(
             }
 
             // Local dispatch (launch --mcp mode)
-            match dispatch_tool(&name, args, registry, hub).await {
+            let result = dispatch_tool(&name, args, registry, hub).await;
+            // Session-changing tools alter the available tool set (capability gating)
+            if matches!(name.as_str(), "launch_session" | "stop_session") && result.is_ok() {
+                let notif = serde_json::json!({"jsonrpc":"2.0","method":"notifications/tools/list_changed"});
+                let mut msg = notif.to_string();
+                msg.push('\n');
+                let _ = mcp_ctx.outbox.send(msg).await;
+            }
+            match result {
                 Ok(content) => RpcResponse::ok(id, json!({ "content": [{ "type": "text", "text": content }] })),
                 Err(e) => RpcResponse::err(id, -32603, e.to_string()),
             }

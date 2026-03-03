@@ -92,6 +92,13 @@ fn target_subprocess_py() -> PathBuf {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+/// Bind to port 0, let the OS assign a free port, then close the listener and return the port.
+/// Avoids collisions when tests run in parallel.
+fn free_port() -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind port 0");
+    listener.local_addr().unwrap().port()
+}
+
 /// Poll until HTTP GET on `path` returns 200, or timeout.
 fn wait_server(port: u16, timeout_secs: u64) -> bool {
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
@@ -330,7 +337,8 @@ impl Drop for ServerGuard {
 
 #[test]
 fn a1_initialize_returns_protocol_version() {
-    let mut p = McpProc::start(9990);
+    let port = free_port();
+    let mut p = McpProc::start(port);
     let r = p.initialize();
     p.stop();
     assert_eq!(
@@ -342,7 +350,8 @@ fn a1_initialize_returns_protocol_version() {
 
 #[test]
 fn a2_tools_list_contains_expected_tools() {
-    let mut p = McpProc::start(9990);
+    let port = free_port();
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.send("tools/list", None);
     p.stop();
@@ -381,7 +390,8 @@ fn a2_tools_list_contains_expected_tools() {
 
 #[test]
 fn a3_ping_returns_empty_object() {
-    let mut p = McpProc::start(9990);
+    let port = free_port();
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.send("ping", None);
     p.stop();
@@ -390,7 +400,8 @@ fn a3_ping_returns_empty_object() {
 
 #[test]
 fn a4_notification_does_not_crash_process() {
-    let mut p = McpProc::start(9990);
+    let port = free_port();
+    let mut p = McpProc::start(port);
     p.initialize();
     // Write a notification (no id) and verify process still alive
     let notif = serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"});
@@ -407,7 +418,8 @@ fn a4_notification_does_not_crash_process() {
 
 #[test]
 fn a5_unknown_method_returns_minus_32601() {
-    let mut p = McpProc::start(9990);
+    let port = free_port();
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.send("bad/method", None);
     p.stop();
@@ -420,7 +432,8 @@ fn a5_unknown_method_returns_minus_32601() {
 
 #[test]
 fn a6_malformed_json_returns_minus_32700() {
-    let mut p = McpProc::start(9990);
+    let port = free_port();
+    let mut p = McpProc::start(port);
     p.child
         .stdin
         .as_mut()
@@ -438,7 +451,8 @@ fn a6_malformed_json_returns_minus_32700() {
 
 #[test]
 fn d1_initialize_works_without_server() {
-    let mut p = McpProc::start(9991);
+    let port = free_port();
+    let mut p = McpProc::start(port);
     let r = p.initialize();
     p.stop();
     assert_eq!(
@@ -450,7 +464,8 @@ fn d1_initialize_works_without_server() {
 
 #[test]
 fn d2_tools_call_errors_when_server_not_running() {
-    let mut p = McpProc::start(9991);
+    let port = free_port();
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.tool_call("get_sessions", serde_json::json!({}));
     p.stop();
@@ -564,7 +579,8 @@ fn p2_attach_bad_port_handled_gracefully() {
 
 #[test]
 fn n1_mcp_no_server_initialize_ok_tool_call_errors() {
-    let mut p = McpProc::start(9992);
+    let port = free_port();
+    let mut p = McpProc::start(port);
     let r = p.initialize();
     assert_eq!(
         r["result"]["protocolVersion"].as_str(),
@@ -593,11 +609,12 @@ fn n3_mcp_help_default_port_7331() {
 #[test]
 fn e1_set_breakpoints_verified() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7361, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12), "server never started on port 7361");
     assert!(srv.wait_paused(12), "session never paused on port 7361");
 
-    let mut p = McpProc::start(7361);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.tool_call(
         "set_breakpoints",
@@ -615,11 +632,12 @@ fn e1_set_breakpoints_verified() {
 #[test]
 fn e2_list_breakpoints_after_set() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7362, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
 
-    let mut p = McpProc::start(7362);
+    let mut p = McpProc::start(port);
     p.initialize();
     p.tool_call(
         "set_breakpoints",
@@ -635,11 +653,12 @@ fn e2_list_breakpoints_after_set() {
 #[test]
 fn e3_set_breakpoints_with_condition() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7363, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
 
-    let mut p = McpProc::start(7363);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.tool_call(
         "set_breakpoints",
@@ -656,11 +675,12 @@ fn e3_set_breakpoints_with_condition() {
 #[test]
 fn e4_clear_breakpoints_empties_list() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7364, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
 
-    let mut p = McpProc::start(7364);
+    let mut p = McpProc::start(port);
     p.initialize();
     p.tool_call(
         "set_breakpoints",
@@ -680,11 +700,12 @@ fn e4_clear_breakpoints_empties_list() {
 #[test]
 fn e5_set_function_breakpoints() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7365, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
 
-    let mut p = McpProc::start(7365);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.tool_call(
         "set_function_breakpoints",
@@ -697,11 +718,12 @@ fn e5_set_function_breakpoints() {
 #[test]
 fn e6_set_exception_breakpoints() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7366, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
 
-    let mut p = McpProc::start(7366);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.tool_call(
         "set_exception_breakpoints",
@@ -716,11 +738,12 @@ fn e6_set_exception_breakpoints() {
 #[test]
 fn f1_get_threads_returns_main_thread() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7371, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
 
-    let mut p = McpProc::start(7371);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.tool_call("get_threads", serde_json::json!({}));
     p.stop();
@@ -735,11 +758,12 @@ fn f1_get_threads_returns_main_thread() {
 #[test]
 fn f2_get_stack_trace_shows_line_43() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7372, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
 
-    let mut p = McpProc::start(7372);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.tool_call("get_stack_trace", serde_json::json!({"thread_id": 1}));
     p.stop();
@@ -755,11 +779,12 @@ fn f2_get_stack_trace_shows_line_43() {
 #[test]
 fn f5_evaluate_simple_expression() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7375, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
 
-    let mut p = McpProc::start(7375);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.tool_call(
         "evaluate",
@@ -774,11 +799,12 @@ fn f5_evaluate_simple_expression() {
 #[test]
 fn f6_get_capabilities_returns_data() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7376, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
 
-    let mut p = McpProc::start(7376);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.tool_call("get_capabilities", serde_json::json!({}));
     p.stop();
@@ -790,11 +816,12 @@ fn f6_get_capabilities_returns_data() {
 #[test]
 fn f7_get_source_full_file_at_least_60_lines() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7377, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
 
-    let mut p = McpProc::start(7377);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.tool_call(
         "get_source",
@@ -813,11 +840,12 @@ fn f7_get_source_full_file_at_least_60_lines() {
 #[test]
 fn f8_get_source_around_line_43_has_marker() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7378, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
 
-    let mut p = McpProc::start(7378);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.tool_call(
         "get_source",
@@ -839,13 +867,14 @@ fn f8_get_source_around_line_43_has_marker() {
 #[test]
 fn g_execution_control_sequential() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7380, Some(43), Some(49));
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), Some(49));
     assert!(srv.wait_up(12), "server never started");
     assert!(srv.wait_paused(12), "session never paused");
 
     // G1: continue → re-pause at line 49
     {
-        let mut p = McpProc::start(7380);
+        let mut p = McpProc::start(port);
         p.initialize();
         let r = p.tool_call("continue_execution", serde_json::json!({"thread_id": 1}));
         p.stop();
@@ -855,7 +884,7 @@ fn g_execution_control_sequential() {
 
     // G2: step_over → paused at some line
     {
-        let mut p = McpProc::start(7380);
+        let mut p = McpProc::start(port);
         p.initialize();
         let r = p.tool_call("step_over", serde_json::json!({"thread_id": 1}));
         p.stop();
@@ -865,7 +894,7 @@ fn g_execution_control_sequential() {
 
     // G3: step_in
     {
-        let mut p = McpProc::start(7380);
+        let mut p = McpProc::start(port);
         p.initialize();
         let r = p.tool_call("step_in", serde_json::json!({"thread_id": 1}));
         p.stop();
@@ -875,7 +904,7 @@ fn g_execution_control_sequential() {
 
     // G4: step_out
     {
-        let mut p = McpProc::start(7380);
+        let mut p = McpProc::start(port);
         p.initialize();
         let r = p.tool_call("step_out", serde_json::json!({"thread_id": 1}));
         p.stop();
@@ -885,7 +914,7 @@ fn g_execution_control_sequential() {
 
     // G5: get_console_output → string
     {
-        let mut p = McpProc::start(7380);
+        let mut p = McpProc::start(port);
         p.initialize();
         let r = p.tool_call("get_console_output", serde_json::json!({}));
         p.stop();
@@ -899,11 +928,12 @@ fn g_execution_control_sequential() {
 #[test]
 fn h1_get_debug_context_all_keys_present() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7381, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
 
-    let mut p = McpProc::start(7381);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.tool_call("get_debug_context", serde_json::json!({}));
     p.stop();
@@ -917,11 +947,12 @@ fn h1_get_debug_context_all_keys_present() {
 #[test]
 fn h2_get_debug_context_compact() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7382, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
 
-    let mut p = McpProc::start(7382);
+    let mut p = McpProc::start(port);
     p.initialize();
     let full = McpProc::text(&p.tool_call("get_debug_context", serde_json::json!({})));
     let compact = McpProc::text(
@@ -940,11 +971,12 @@ fn h2_get_debug_context_compact() {
 #[test]
 fn h3_annotate_ok() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7383, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
 
-    let mut p = McpProc::start(7383);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.tool_call(
         "annotate",
@@ -962,11 +994,12 @@ fn h3_annotate_ok() {
 #[test]
 fn h4_add_finding_ok() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7384, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
 
-    let mut p = McpProc::start(7384);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.tool_call(
         "add_finding",
@@ -980,11 +1013,12 @@ fn h4_add_finding_ok() {
 #[test]
 fn h5_step_until_condition() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7385, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
 
-    let mut p = McpProc::start(7385);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.tool_call(
         "step_until",
@@ -999,11 +1033,12 @@ fn h5_step_until_condition() {
 #[test]
 fn h6_list_sessions_enriched() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7386, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
 
-    let mut p = McpProc::start(7386);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.tool_call("list_sessions", serde_json::json!({}));
     p.stop();
@@ -1024,11 +1059,12 @@ fn h6_list_sessions_enriched() {
 #[test]
 fn i1_get_exception_info_not_on_exception_handled() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7391, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
 
-    let mut p = McpProc::start(7391);
+    let mut p = McpProc::start(port);
     p.initialize();
     // Not paused on an exception — should return error or empty, not crash
     let _r = p.tool_call("get_exception_info", serde_json::json!({"thread_id": 1}));
@@ -1039,12 +1075,13 @@ fn i1_get_exception_info_not_on_exception_handled() {
 #[test]
 fn i2_set_variable_handled() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7392, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
 
     // Get frame_id and var_ref via stack/scopes
-    let mut p = McpProc::start(7392);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r_stack = p.tool_call("get_stack_trace", serde_json::json!({"thread_id": 1}));
     let text_stack = McpProc::text(&r_stack);
@@ -1095,12 +1132,13 @@ fn i3_run_until_exception_catches_exception() {
     std::fs::write(&tmp, "import time\ntime.sleep(0.2)\nraise ValueError('intentional')\n")
         .unwrap();
 
+    let port = free_port();
     let mut child = Command::new(debugium_bin())
         .args([
             "launch",
             tmp.to_str().unwrap(),
             "--adapter", "python",
-            "--port", "7393",
+            "--port", &port.to_string(),
             "--no-open-browser",
         ])
         .stdout(Stdio::null())
@@ -1108,10 +1146,10 @@ fn i3_run_until_exception_catches_exception() {
         .spawn()
         .unwrap();
 
-    let ok = wait_server(7393, 12);
+    let ok = wait_server(port, 12);
     if ok {
         std::thread::sleep(Duration::from_millis(500));
-        let mut p = McpProc::start(7393);
+        let mut p = McpProc::start(port);
         p.initialize();
         let r = p.tool_call("run_until_exception", serde_json::json!({}));
         p.stop();
@@ -1131,11 +1169,12 @@ fn i3_run_until_exception_catches_exception() {
 #[test]
 fn i4_disconnect_terminate_false() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7394, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
 
-    let mut p = McpProc::start(7394);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.tool_call("disconnect", serde_json::json!({"terminate_debuggee": false}));
     p.stop();
@@ -1148,19 +1187,21 @@ fn i4_disconnect_terminate_false() {
 #[test]
 fn m1_launch_fixed_port_http_200() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7351, None, None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, None, None);
     assert!(srv.wait_up(12), "server never started on port 7351");
-    let body = http_get(7351, "/sessions").expect("/sessions failed");
+    let body = http_get(port, "/sessions").expect("/sessions failed");
     assert!(!body.is_empty(), "expected JSON body");
 }
 
 #[test]
 fn m3_launch_with_breakpoint_pauses() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7352, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12), "server never started");
     assert!(srv.wait_paused(12), "session never paused");
-    let body = http_get(7352, "/state").expect("/state failed");
+    let body = http_get(port, "/state").expect("/state failed");
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(v["paused"].as_bool(), Some(true), "expected paused=true: {v}");
 }
@@ -1168,10 +1209,11 @@ fn m3_launch_with_breakpoint_pauses() {
 #[test]
 fn m4_multiple_breakpoints_both_set() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7353, Some(43), Some(49));
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), Some(49));
     assert!(srv.wait_up(12));
     assert!(srv.wait_paused(12));
-    let body = http_get(7353, "/breakpoints").unwrap_or_default();
+    let body = http_get(port, "/breakpoints").unwrap_or_default();
     assert!(body.contains("43"), "expected line 43 in /breakpoints: {body}");
     assert!(body.contains("49"), "expected line 49 in /breakpoints: {body}");
 }
@@ -1179,7 +1221,8 @@ fn m4_multiple_breakpoints_both_set() {
 #[test]
 fn m6_port_file_written() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7355, None, None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, None, None);
     assert!(srv.wait_up(12));
     let port_file = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
@@ -1198,10 +1241,11 @@ fn m6_port_file_written() {
 #[test]
 fn n2_mcp_proxy_with_live_server_get_sessions() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7356, None, None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, None, None);
     assert!(srv.wait_up(12));
 
-    let mut p = McpProc::start(7356);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.tool_call("get_sessions", serde_json::json!({}));
     p.stop();
@@ -1217,7 +1261,7 @@ fn n2_mcp_proxy_with_live_server_get_sessions() {
 
 #[test]
 fn o1_launch_mcp_flag_stdio_and_http() {
-    let port: u16 = 7357;
+    let port = free_port();
     let bin = debugium_bin();
     let target = target_py();
     let mut child = Command::new(&bin)
@@ -1273,11 +1317,12 @@ fn o1_launch_mcp_flag_stdio_and_http() {
 fn t1_get_stack_trace_auto_detects_paused_thread() {
     let target = target_threads_py();
     require_debugpy!();
-    let srv = ServerGuard::launch_with_target(7401, target, 6);
+    let port = free_port();
+    let srv = ServerGuard::launch_with_target(port, target, 6);
     assert!(srv.wait_up(15), "T1 server never started");
     assert!(srv.wait_paused(15), "T1 never paused at breakpoint");
 
-    let mut p = McpProc::start(7401);
+    let mut p = McpProc::start(port);
     p.initialize();
     // Call get_stack_trace WITHOUT thread_id — server must auto-detect
     let r = p.tool_call("get_stack_trace", serde_json::json!({}));
@@ -1296,11 +1341,12 @@ fn t1_get_stack_trace_auto_detects_paused_thread() {
 fn t2_get_threads_returns_thread_list() {
     let target = target_threads_py();
     require_debugpy!();
-    let srv = ServerGuard::launch_with_target(7402, target, 6);
+    let port = free_port();
+    let srv = ServerGuard::launch_with_target(port, target, 6);
     assert!(srv.wait_up(15), "T2 server never started");
     assert!(srv.wait_paused(15), "T2 never paused");
 
-    let mut p = McpProc::start(7402);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.tool_call("get_threads", serde_json::json!({}));
     p.stop();
@@ -1318,11 +1364,12 @@ fn t2_get_threads_returns_thread_list() {
 fn t3_evaluate_auto_resolves_frame_via_paused_thread() {
     let target = target_threads_py();
     require_debugpy!();
-    let srv = ServerGuard::launch_with_target(7403, target, 6);
+    let port = free_port();
+    let srv = ServerGuard::launch_with_target(port, target, 6);
     assert!(srv.wait_up(15), "T3 server never started");
     assert!(srv.wait_paused(15), "T3 never paused");
 
-    let mut p = McpProc::start(7403);
+    let mut p = McpProc::start(port);
     p.initialize();
     // Evaluate `name` — a local variable in worker() — no frame_id provided
     let r = p.tool_call(
@@ -1345,11 +1392,12 @@ fn t3_evaluate_auto_resolves_frame_via_paused_thread() {
 fn t4_get_debug_context_auto_detects_thread() {
     let target = target_threads_py();
     require_debugpy!();
-    let srv = ServerGuard::launch_with_target(7404, target, 6);
+    let port = free_port();
+    let srv = ServerGuard::launch_with_target(port, target, 6);
     assert!(srv.wait_up(15), "T4 server never started");
     assert!(srv.wait_paused(15), "T4 never paused");
 
-    let mut p = McpProc::start(7404);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.tool_call("get_debug_context", serde_json::json!({}));
     p.stop();
@@ -1382,10 +1430,11 @@ fn u1_subprocess_child_pauses_in_parent_session() {
     let target = target_subprocess_py();
     // No breakpoint in the parent — the child's breakpoint() will trigger a stop.
     require_debugpy!();
-    let srv = ServerGuard::launch_with_target(7411, target, 0);
+    let port = free_port();
+    let srv = ServerGuard::launch_with_target(port, target, 0);
     assert!(srv.wait_up(15), "U1 server never started");
     // Child attach + pause is async — give it more time than normal tests.
-    assert!(wait_paused(7411, 25), "U1 session never paused (child breakpoint not received)");
+    assert!(wait_paused(port, 25), "U1 session never paused (child breakpoint not received)");
 }
 
 /// U2: While child is paused at breakpoint(), the parent's stack shows it blocked inside
@@ -1395,11 +1444,12 @@ fn u1_subprocess_child_pauses_in_parent_session() {
 fn u2_parent_stack_shows_subprocess_call() {
     let target = target_subprocess_py();
     require_debugpy!();
-    let srv = ServerGuard::launch_with_target(7412, target, 0);
+    let port = free_port();
+    let srv = ServerGuard::launch_with_target(port, target, 0);
     assert!(srv.wait_up(15), "U2 server never started");
-    assert!(wait_paused(7412, 25), "U2 session never paused");
+    assert!(wait_paused(port, 25), "U2 session never paused");
 
-    let mut p = McpProc::start(7412);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.tool_call("get_stack_trace", serde_json::json!({}));
     p.stop();
@@ -1419,11 +1469,12 @@ fn u2_parent_stack_shows_subprocess_call() {
 fn u3_get_threads_while_child_paused() {
     let target = target_subprocess_py();
     require_debugpy!();
-    let srv = ServerGuard::launch_with_target(7413, target, 0);
+    let port = free_port();
+    let srv = ServerGuard::launch_with_target(port, target, 0);
     assert!(srv.wait_up(15), "U3 server never started");
-    assert!(wait_paused(7413, 25), "U3 session never paused");
+    assert!(wait_paused(port, 25), "U3 session never paused");
 
-    let mut p = McpProc::start(7413);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.tool_call("get_threads", serde_json::json!({}));
     p.stop();
@@ -1443,11 +1494,12 @@ fn u3_get_threads_while_child_paused() {
 #[test]
 fn v1_get_annotations_after_annotate() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7421, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12), "V1 server never started");
     assert!(srv.wait_paused(12), "V1 session never paused");
 
-    let mut p = McpProc::start(7421);
+    let mut p = McpProc::start(port);
     p.initialize();
     p.tool_call("annotate", serde_json::json!({
         "file": target_py(),
@@ -1467,11 +1519,12 @@ fn v1_get_annotations_after_annotate() {
 #[test]
 fn v2_get_findings_after_add_finding() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7422, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12), "V2 server never started");
     assert!(srv.wait_paused(12), "V2 session never paused");
 
-    let mut p = McpProc::start(7422);
+    let mut p = McpProc::start(port);
     p.initialize();
     p.tool_call("add_finding", serde_json::json!({
         "message": "v2 test finding",
@@ -1489,11 +1542,12 @@ fn v2_get_findings_after_add_finding() {
 #[test]
 fn v3_get_variable_history_tracks_variable() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7423, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12), "V3 server never started");
     assert!(srv.wait_paused(12), "V3 session never paused");
 
-    let mut p = McpProc::start(7423);
+    let mut p = McpProc::start(port);
     p.initialize();
     // Step a few times to build up timeline entries
     p.tool_call("step_over", serde_json::json!({}));
@@ -1516,11 +1570,12 @@ fn v3_get_variable_history_tracks_variable() {
 #[test]
 fn v4_wait_for_output_returns_result() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7424, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12), "V4 server never started");
     assert!(srv.wait_paused(12), "V4 session never paused");
 
-    let mut p = McpProc::start(7424);
+    let mut p = McpProc::start(port);
     p.initialize();
     // Use a short timeout so the test finishes quickly regardless of match
     let r = p.tool_call("wait_for_output", serde_json::json!({
@@ -1540,11 +1595,12 @@ fn v4_wait_for_output_returns_result() {
 #[test]
 fn w1_set_logpoint_via_set_breakpoint_tool() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7425, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12), "W1 server never started");
     assert!(srv.wait_paused(12), "W1 session never paused");
 
-    let mut p = McpProc::start(7425);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.tool_call("set_breakpoint", serde_json::json!({
         "file": target_py().to_str().unwrap(),
@@ -1562,11 +1618,12 @@ fn w1_set_logpoint_via_set_breakpoint_tool() {
 #[test]
 fn w2_set_logpoint_dedicated_tool() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7426, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12), "W2 server never started");
     assert!(srv.wait_paused(12), "W2 session never paused");
 
-    let mut p = McpProc::start(7426);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.tool_call("set_logpoint", serde_json::json!({
         "file": target_py().to_str().unwrap(),
@@ -1583,11 +1640,12 @@ fn w2_set_logpoint_dedicated_tool() {
 #[test]
 fn w3_set_breakpoint_with_hit_condition() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7427, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12), "W3 server never started");
     assert!(srv.wait_paused(12), "W3 session never paused");
 
-    let mut p = McpProc::start(7427);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.tool_call("set_breakpoint", serde_json::json!({
         "file": target_py().to_str().unwrap(),
@@ -1604,11 +1662,12 @@ fn w3_set_breakpoint_with_hit_condition() {
 #[test]
 fn w4_logpoint_appears_in_list_breakpoints() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7428, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12), "W4 server never started");
     assert!(srv.wait_paused(12), "W4 session never paused");
 
-    let mut p = McpProc::start(7428);
+    let mut p = McpProc::start(port);
     p.initialize();
     p.tool_call("set_logpoint", serde_json::json!({
         "file": target_py().to_str().unwrap(),
@@ -1625,7 +1684,8 @@ fn w4_logpoint_appears_in_list_breakpoints() {
 
 #[test]
 fn w5_set_logpoint_tool_listed_in_tools() {
-    let mut p = McpProc::start(7331);
+    let port = free_port();
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.send("tools/list", Some(serde_json::json!({})));
     p.stop();
@@ -1638,11 +1698,12 @@ fn w5_set_logpoint_tool_listed_in_tools() {
 #[test]
 fn x1_continue_until_reaches_target_line() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7429, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12), "X1 server never started");
     assert!(srv.wait_paused(12), "X1 session never paused");
 
-    let mut p = McpProc::start(7429);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.tool_call("continue_until", serde_json::json!({
         "file": target_py().to_str().unwrap(),
@@ -1657,7 +1718,8 @@ fn x1_continue_until_reaches_target_line() {
 
 #[test]
 fn x2_continue_until_tool_listed() {
-    let mut p = McpProc::start(7331);
+    let port = free_port();
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.send("tools/list", Some(serde_json::json!({})));
     p.stop();
@@ -1668,11 +1730,12 @@ fn x2_continue_until_tool_listed() {
 #[test]
 fn x3_continue_until_timeout_returns_message() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7430, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12), "X3 server never started");
     assert!(srv.wait_paused(12), "X3 session never paused");
 
-    let mut p = McpProc::start(7430);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.tool_call("continue_until", serde_json::json!({
         "file": target_py().to_str().unwrap(),
@@ -1691,7 +1754,8 @@ fn x3_continue_until_timeout_returns_message() {
 
 #[test]
 fn y1_explain_exception_tool_listed() {
-    let mut p = McpProc::start(7331);
+    let port = free_port();
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.send("tools/list", Some(serde_json::json!({})));
     p.stop();
@@ -1706,12 +1770,13 @@ fn y2_explain_exception_returns_structured_context() {
     std::fs::write(&tmp, "import time\ntime.sleep(0.2)\nraise ValueError('test error')\n")
         .unwrap();
 
+    let port = free_port();
     let mut child = Command::new(debugium_bin())
         .args([
             "launch",
             tmp.to_str().unwrap(),
             "--adapter", "python",
-            "--port", "7431",
+            "--port", &port.to_string(),
             "--no-open-browser",
         ])
         .stdout(Stdio::null())
@@ -1719,10 +1784,10 @@ fn y2_explain_exception_returns_structured_context() {
         .spawn()
         .unwrap();
 
-    let ok = wait_server(7431, 12);
+    let ok = wait_server(port, 12);
     if ok {
         std::thread::sleep(Duration::from_millis(500));
-        let mut p = McpProc::start(7431);
+        let mut p = McpProc::start(port);
         p.initialize();
         p.tool_call("run_until_exception", serde_json::json!({}));
         let r = p.tool_call("explain_exception", serde_json::json!({}));
@@ -1745,7 +1810,8 @@ fn y2_explain_exception_returns_structured_context() {
 
 #[test]
 fn z1_data_breakpoint_tools_listed() {
-    let mut p = McpProc::start(7331);
+    let port = free_port();
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.send("tools/list", Some(serde_json::json!({})));
     p.stop();
@@ -1758,11 +1824,12 @@ fn z1_data_breakpoint_tools_listed() {
 #[test]
 fn z2_list_data_breakpoints_empty() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7432, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12), "Z2 server never started");
     assert!(srv.wait_paused(12), "Z2 session never paused");
 
-    let mut p = McpProc::start(7432);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.tool_call("list_data_breakpoints", serde_json::json!({}));
     p.stop();
@@ -1775,11 +1842,12 @@ fn z2_list_data_breakpoints_empty() {
 #[test]
 fn z3_set_data_breakpoint_protocol_flow() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7433, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12), "Z3 server never started");
     assert!(srv.wait_paused(12), "Z3 session never paused");
 
-    let mut p = McpProc::start(7433);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.tool_call("set_data_breakpoint", serde_json::json!({
         "name": "fibs",
@@ -1801,7 +1869,8 @@ fn z3_set_data_breakpoint_protocol_flow() {
 
 #[test]
 fn aa1_export_import_tools_listed() {
-    let mut p = McpProc::start(7331);
+    let port = free_port();
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.send("tools/list", Some(serde_json::json!({})));
     p.stop();
@@ -1813,11 +1882,12 @@ fn aa1_export_import_tools_listed() {
 #[test]
 fn aa2_export_session_returns_bundle() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7434, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12), "AA2 server never started");
     assert!(srv.wait_paused(12), "AA2 session never paused");
 
-    let mut p = McpProc::start(7434);
+    let mut p = McpProc::start(port);
     p.initialize();
     p.tool_call("annotate", serde_json::json!({
         "file": target_py().to_str().unwrap(), "line": 43,
@@ -1841,11 +1911,12 @@ fn aa2_export_session_returns_bundle() {
 #[test]
 fn aa3_import_session_restores_findings() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7435, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12), "AA3 server never started");
     assert!(srv.wait_paused(12), "AA3 session never paused");
 
-    let mut p = McpProc::start(7435);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.tool_call("import_session", serde_json::json!({
         "data": {
@@ -1870,7 +1941,8 @@ fn aa3_import_session_restores_findings() {
 
 #[test]
 fn ab1_memory_tools_listed_without_session() {
-    let mut p = McpProc::start(7331);
+    let port = free_port();
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.send("tools/list", Some(serde_json::json!({})));
     p.stop();
@@ -1883,11 +1955,12 @@ fn ab1_memory_tools_listed_without_session() {
 #[test]
 fn ab2_memory_tools_hidden_for_python() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7436, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12), "AB2 server never started");
     assert!(srv.wait_paused(12), "AB2 session never paused");
 
-    let mut p = McpProc::start(7436);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.send("tools/list", Some(serde_json::json!({})));
     p.stop();
@@ -1901,11 +1974,12 @@ fn ab2_memory_tools_hidden_for_python() {
 #[test]
 fn ab3_python_still_shows_supported_tools() {
     require_debugpy!();
-    let srv = ServerGuard::launch(7437, Some(43), None);
+    let port = free_port();
+    let srv = ServerGuard::launch(port, Some(43), None);
     assert!(srv.wait_up(12), "AB3 server never started");
     assert!(srv.wait_paused(12), "AB3 session never paused");
 
-    let mut p = McpProc::start(7437);
+    let mut p = McpProc::start(port);
     p.initialize();
     let r = p.send("tools/list", Some(serde_json::json!({})));
     p.stop();
