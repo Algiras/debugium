@@ -1,6 +1,6 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.algiras/debugium",
+  "name": "io.github.Algiras/debugium",
   "description": "AI-driven live debugger with MCP bridge for Python, JS, TS, Rust, Java, C/C++",
   "repository": {
     "url": "https://github.com/Algiras/debugium",

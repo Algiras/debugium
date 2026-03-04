@@ -7,7 +7,12 @@ __pycache__/
 # Allow debugium-ui dist (pre-built WASM UI bundle checked in for releases)
 crates/debugium-ui/pkg/
 build/
+.env
+.npmrc
+.mcpregistry_*
+DEBUG_PLAYBOOK.md
 node_modules/
+npm/bin/
 .gemini/
 js-debug/
 *.tar.gz
