@@ -1,0 +1,14 @@
+{
+  "name": "Remote Java (JDWP attach)",
+  "adapterId": "java",
+  "request": "attach",
+  "command": ["java", "-jar", "java-debug-adapter.jar", "0"],
+  "attach": {
+    "type": "java",
+    "request": "attach",
+    "hostName": "127.0.0.1",
+    "port": 5005
+  },
+  "exceptionBreakpoints": ["uncaught"],
+  "_note": "Start JVM with: java -agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=*:5005 -jar app.jar"
+}

@@ -71,6 +71,19 @@ launch_session(program="/abs/path/script.py", breakpoints=["/abs/path/script.py:
 → { session_id: "session-...", status: "paused" }
 ```
 
+For remote debugging (attach to an already-running process):
+```
+# Python (debugpy listening on port 5678)
+attach_session(port=5678, adapter="python", program="/abs/path/app.py", breakpoints=["/abs/path/app.py:42"])
+
+# Java (JDWP on port 5005)
+attach_session(port=5005, adapter="java")
+
+# Node.js (inspector on port 9229)
+attach_session(port=9229, adapter="node", breakpoints=["/abs/path/app.js:15"])
+→ { session_id: "session-...", status: "paused", mode: "attach" }
+```
+
 ### 5. Verify the server is running
 
 ```
@@ -83,9 +96,10 @@ If empty and `launch_session` is not available, ask the user to launch manually.
 
 ## Standard debugging workflow
 
-### 0. Launch (if no session exists)
+### 0. Launch or attach (if no session exists)
 ```
 launch_session        → starts adapter, sets breakpoints, returns session_id
+attach_session        → attaches to a running process (debugpy, JDWP, inspector)
 ```
 
 ### 1. Orient — always start here
@@ -162,6 +176,7 @@ remove_watch(expression)
 | Did the program print Y? | `wait_for_output("Y", from_line=N)` |
 | What did I already annotate? | `get_annotations` |
 | What did I already conclude? | `get_findings` |
+| Attach to remote process? | `attach_session(port, adapter, program?)` |
 | Multiple sessions? | `list_sessions`, then pass `session_id` to all tools |
 | Where can I set breakpoints? | `breakpoint_locations(file, line, end_line)` |
 | What files are loaded? | `loaded_sources` |
@@ -187,6 +202,7 @@ remove_watch(expression)
 ```
 # Session
 launch_session(program, adapter?, config?, breakpoints?, session_id?)
+attach_session(port, host?, adapter?, program?, breakpoints?, attach_args?, session_id?)
 stop_session(session_id?)
 get_sessions / list_sessions
 get_capabilities                  (adapter feature flags — what's supported)

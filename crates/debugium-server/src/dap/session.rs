@@ -585,6 +585,7 @@ impl Session {
         cwd: PathBuf,
         breakpoints: &[(String, Vec<u32>)],
         exception_filters: Option<&[String]>,
+        attach_args_override: Option<Value>,
     ) -> Result<()> {
         // Populate session metadata
         let adapter_id = self.adapter.adapter_id().to_string();
@@ -609,7 +610,8 @@ impl Session {
         }
 
         // 1. attach — fire and forget (response arrives after configurationDone)
-        let attach_args = self.adapter.launch_args(&program, &cwd);
+        let attach_args = attach_args_override
+            .unwrap_or_else(|| self.adapter.launch_args(&program, &cwd));
         self.client.notify("attach", Some(attach_args)).await?;
 
         // 2. wait for `initialized` event
