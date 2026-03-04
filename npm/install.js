@@ -6,7 +6,7 @@ const path = require("path");
 const https = require("https");
 const { createWriteStream, mkdirSync } = fs;
 
-const VERSION = "0.1.1";
+const VERSION = "0.1.2";
 const REPO = "Algiras/debugium";
 const BIN_DIR = path.join(__dirname, "bin");
 const BIN_NAME = process.platform === "win32" ? "debugium.exe" : "debugium";
