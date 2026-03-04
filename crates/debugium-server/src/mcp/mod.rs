@@ -710,6 +710,27 @@ fn tool_list(adapter_caps: &Value) -> Value {
                 }
             },
             {
+                "name": "attach_session",
+                "description": "Attach to a running debug target (JVM via JDWP, Python via debugpy, Node via inspector, or a remote DAP server). Spawns a local debug adapter that connects to the remote process.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "host":        { "type": "string", "description": "Remote host. Default: '127.0.0.1'." },
+                        "port":        { "type": "integer", "description": "Remote debug port (e.g. 5005 for JDWP, 5678 for debugpy, 9229 for Node inspector)." },
+                        "adapter":     { "type": "string", "description": "Debug adapter: 'java', 'python', 'node', 'lldb'. Auto-detected from program extension if omitted." },
+                        "program":     { "type": "string", "description": "Path to source file (for breakpoints and source mapping context)." },
+                        "breakpoints": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Breakpoints as 'file:line' strings, e.g. ['/path/app.py:42']."
+                        },
+                        "attach_args": { "type": "object", "description": "Custom args merged into the DAP attach request (overrides auto-generated defaults)." },
+                        "session_id":  { "type": "string", "description": "Custom session ID. Auto-generated if omitted." }
+                    },
+                    "required": ["port"]
+                }
+            },
+            {
                 "name": "stop_session",
                 "description": "Stop and clean up a debug session. Sends disconnect to the adapter, kills the adapter process, and removes the session from the registry.",
                 "inputSchema": {
@@ -1214,7 +1235,7 @@ async fn handle_request(
             // Local dispatch (launch --mcp mode)
             let result = dispatch_tool(&name, args, registry, hub).await;
             // Session-changing tools alter the available tool set (capability gating)
-            if matches!(name.as_str(), "launch_session" | "stop_session") && result.is_ok() {
+            if matches!(name.as_str(), "launch_session" | "attach_session" | "stop_session") && result.is_ok() {
                 let notif = serde_json::json!({"jsonrpc":"2.0","method":"notifications/tools/list_changed"});
                 let mut msg = notif.to_string();
                 msg.push('\n');

@@ -546,6 +546,84 @@ impl Adapter {
         }
     }
 
+    /// Build the `attach` arguments for connecting to a remote debug target.
+    pub fn attach_args(&self, host: &str, port: u16, program: &Path, cwd: &Path) -> Value {
+        match &self.kind {
+            AdapterKind::Python => json!({
+                "type": "python",
+                "request": "attach",
+                "connect": { "host": host, "port": port },
+                "justMyCode": false,
+                "subProcess": true,
+                "debugOptions": ["RedirectOutput", "ShowReturnValue"],
+                "pathMappings": [{
+                    "localRoot": cwd.to_str().unwrap_or(""),
+                    "remoteRoot": "."
+                }]
+            }),
+
+            AdapterKind::NodeJs | AdapterKind::TypeScript => json!({
+                "type": "pwa-node",
+                "request": "attach",
+                "address": host,
+                "port": port,
+                "skipFiles": ["<node_internals>/**"],
+                "sourceMaps": true
+            }),
+
+            AdapterKind::Java => json!({
+                "type": "java",
+                "request": "attach",
+                "hostName": host,
+                "port": port
+            }),
+
+            AdapterKind::CodeLldb => json!({
+                "type": "lldb",
+                "request": "attach",
+                "connectRemote": format!("connect://{}:{}", host, port),
+                "program": program.to_str().unwrap_or("")
+            }),
+
+            AdapterKind::Metals { .. } => json!({
+                "type": "scala",
+                "request": "attach",
+                "hostName": host,
+                "port": port,
+                "buildTarget": program.file_stem()
+                    .and_then(|s| s.to_str()).unwrap_or("root")
+            }),
+
+            AdapterKind::DapConfig(cfg) => {
+                // Start with the attach block if present, else build a minimal one
+                let mut args = cfg.attach.clone().unwrap_or_else(|| json!({
+                    "request": "attach"
+                }));
+                if let Some(obj) = args.as_object_mut() {
+                    obj.entry("request").or_insert_with(|| json!("attach"));
+                    // Merge host/port — adapter-specific key names vary,
+                    // so insert both common patterns
+                    obj.entry("host").or_insert_with(|| json!(host));
+                    obj.entry("hostName").or_insert_with(|| json!(host));
+                    obj.entry("port").or_insert_with(|| json!(port));
+                    obj.entry("program").or_insert_with(|| json!(program.to_str().unwrap_or("")));
+                    obj.entry("cwd").or_insert_with(|| json!(cwd.to_str().unwrap_or("")));
+                }
+                let prog_str = program.to_str().unwrap_or("");
+                let cwd_str = cwd.to_str().unwrap_or("");
+                expand_placeholders(&mut args, prog_str, cwd_str);
+                args
+            }
+
+            AdapterKind::Wasm | AdapterKind::Custom(_) => json!({
+                "request": "attach",
+                "program": program.to_str().unwrap_or(""),
+                "host": host,
+                "port": port
+            }),
+        }
+    }
+
     /// Adapter type string used in `initialize` request.
     pub fn adapter_id(&self) -> &str {
         match &self.kind {

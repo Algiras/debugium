@@ -390,7 +390,7 @@ async fn main() -> Result<()> {
             tokio::spawn(async move {
                 if is_attach_mode {
                     let filters = dap_exception_filters.as_deref();
-                    if let Err(e) = session2.configure_and_attach(program2, cwd2, &breakpoints, filters).await {
+                    if let Err(e) = session2.configure_and_attach(program2, cwd2, &breakpoints, filters, None).await {
                         tracing::error!("configure_and_attach failed: {e}");
                     }
                 } else {

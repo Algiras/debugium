@@ -1566,6 +1566,141 @@ pub async fn dispatch_tool(
             }))?)
         }
 
+        "attach_session" => {
+            let port = args.get("port").and_then(Value::as_u64)
+                .ok_or_else(|| anyhow::anyhow!("`port` is required"))? as u16;
+            let host = args.get("host").and_then(Value::as_str).unwrap_or("127.0.0.1");
+            let program_str = args.get("program").and_then(Value::as_str).unwrap_or("");
+            let program = std::path::PathBuf::from(if program_str.is_empty() { "." } else { program_str });
+            let adapter_str = args.get("adapter").and_then(Value::as_str);
+            let custom_attach_args = args.get("attach_args").cloned();
+
+            let kind = if let Some(a) = adapter_str {
+                crate::dap::adapter::AdapterKind::from_str(a)
+            } else if !program_str.is_empty() {
+                crate::dap::adapter::adapter_kind_from_extension(&program)
+                    .unwrap_or(crate::dap::adapter::AdapterKind::Python)
+            } else {
+                crate::dap::adapter::AdapterKind::Python
+            };
+
+            let adapter = crate::dap::adapter::Adapter::new(kind);
+            let sid = args.get("session_id").and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    format!("session-{}", chrono::Utc::now().timestamp_millis())
+                });
+
+            let cwd = std::env::current_dir().unwrap_or_default();
+
+            // Build attach args: custom overrides > adapter defaults
+            let attach_args = if let Some(mut custom) = custom_attach_args {
+                // Merge adapter defaults under custom (custom wins)
+                let defaults = adapter.attach_args(host, port, &program, &cwd);
+                if let (Some(base), Some(overlay)) = (defaults.as_object(), custom.as_object_mut()) {
+                    for (k, v) in base {
+                        overlay.entry(k.clone()).or_insert_with(|| v.clone());
+                    }
+                }
+                Some(custom)
+            } else {
+                Some(adapter.attach_args(host, port, &program, &cwd))
+            };
+
+            // Decide whether to connect directly via TCP or spawn a local adapter.
+            // Python (debugpy) IS a DAP server — connect directly via TCP.
+            // Java/Node/LLDB need a local adapter that translates DAP ↔ native protocol.
+            let use_tcp = adapter.is_tcp_attach() || matches!(adapter.kind, crate::dap::adapter::AdapterKind::Python);
+            let session = if use_tcp {
+                // Direct TCP connection to a remote DAP server
+                let addr = format!("{}:{}", host, port).parse::<std::net::SocketAddr>()
+                    .map_err(|e| anyhow::anyhow!("Invalid address {}:{} — {e}", host, port))?;
+                crate::dap::session::Session::from_tcp(sid.clone(), addr, adapter, hub.clone())
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to connect to DAP server at {}:{} — {e}", host, port))?
+            } else {
+                // Spawn a local adapter process that will connect to the remote debuggee
+                crate::dap::session::Session::new(sid.clone(), adapter, hub.clone())
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to create session: {e}"))?
+            };
+
+            registry.insert(session.clone()).await;
+
+            // Auto-remove session from registry after termination
+            {
+                let reg = registry.clone();
+                let sid_cleanup = sid.clone();
+                let mut term_rx = session.terminated_tx.subscribe();
+                tokio::spawn(async move {
+                    while term_rx.changed().await.is_ok() {
+                        if *term_rx.borrow() {
+                            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                            reg.remove(&sid_cleanup).await;
+                            break;
+                        }
+                    }
+                });
+            }
+
+            // Parse breakpoints
+            let bp_strs: Vec<String> = args.get("breakpoints")
+                .and_then(Value::as_array)
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            let breakpoints = parse_breakpoint_strings(&bp_strs);
+
+            // Run configure_and_attach with our attach args override
+            let session2 = session.clone();
+            let program2 = program.clone();
+            let cwd2 = cwd.clone();
+            let attach_handle = tokio::spawn(async move {
+                session2.configure_and_attach(program2, cwd2, &breakpoints, None, attach_args).await
+            });
+
+            // Wait up to 30s for the attach to complete
+            match tokio::time::timeout(std::time::Duration::from_secs(30), attach_handle).await {
+                Ok(Ok(Ok(()))) => {}
+                Ok(Ok(Err(e))) => return Err(anyhow::anyhow!("Attach failed: {e}")),
+                Ok(Err(e)) => return Err(anyhow::anyhow!("Attach task panicked: {e}")),
+                Err(_) => return Err(anyhow::anyhow!("Attach timed out after 30s")),
+            }
+
+            // Try to wait briefly for a breakpoint hit
+            let status = match session.wait_for_stop(5).await {
+                Ok(()) => "paused",
+                Err(_) => "running",
+            };
+
+            // Broadcast session_launched on ALL existing sessions
+            {
+                use dap_types::WsEnvelope;
+                let all_ids = registry.list().await;
+                for existing_id in &all_ids {
+                    let envelope = WsEnvelope {
+                        session_id: sid.clone(),
+                        msg: json!({
+                            "type": "event",
+                            "event": "session_launched",
+                            "body": { "session_id": sid, "program": program_str, "status": status, "mode": "attach" }
+                        }),
+                    };
+                    if let Ok(j) = serde_json::to_string(&envelope) {
+                        hub.broadcast(existing_id, j).await;
+                    }
+                }
+            }
+
+            Ok(serde_json::to_string_pretty(&json!({
+                "session_id": sid,
+                "status": status,
+                "mode": "attach",
+                "host": host,
+                "port": port,
+                "hint": "Call get_debug_context to see where execution paused."
+            }))?)
+        }
+
         "stop_session" => {
             let s = session.ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
 

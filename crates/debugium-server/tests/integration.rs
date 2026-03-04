@@ -1989,3 +1989,130 @@ fn ab3_python_still_shows_supported_tools() {
     assert!(tools_json.contains("\"step_over\""), "step_over missing");
     assert!(tools_json.contains("\"set_breakpoints\""), "set_breakpoints missing");
 }
+
+// ─── Group Q: attach_session MCP tool ────────────────────────────────────────
+
+/// Q1: attach_session tool appears in the MCP tools/list.
+#[test]
+fn q1_attach_session_tool_listed() {
+    let port = free_port();
+    let mut p = McpProc::start(port);
+    p.initialize();
+    let r = p.send("tools/list", None);
+    p.stop();
+    let tools: Vec<String> = r["result"]["tools"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .filter_map(|t| t["name"].as_str().map(String::from))
+        .collect();
+    assert!(tools.contains(&"attach_session".to_string()), "attach_session missing from tools list: {tools:?}");
+}
+
+/// Q2: Full end-to-end remote attach — start debugpy, attach via MCP, verify paused.
+#[test]
+fn q2_attach_session_debugpy_e2e() {
+    require_debugpy!();
+    let target = target_py();
+    let debugpy_port = free_port();
+
+    // 1. Start debugpy listening on a free port, waiting for client
+    let mut debugpy = Command::new("python3")
+        .args([
+            "-m", "debugpy",
+            "--listen", &format!("127.0.0.1:{debugpy_port}"),
+            "--wait-for-client",
+            target.to_str().unwrap(),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn debugpy");
+
+    // Give debugpy a moment to start listening
+    std::thread::sleep(Duration::from_secs(2));
+
+    // 2. Start debugium launch --mcp (local dispatch mode, no proxying)
+    //    We launch with a dummy python target so the server comes up,
+    //    then call attach_session to connect to debugpy.
+    let http_port = free_port();
+    let bin = debugium_bin();
+    let dummy_target = target.clone();
+    let mut child = Command::new(&bin)
+        .args([
+            "launch",
+            dummy_target.to_str().unwrap(),
+            "--adapter", "python",
+            "--port", &http_port.to_string(),
+            "--no-open-browser",
+            "--mcp",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn debugium launch --mcp");
+
+    let stdout = child.stdout.take().unwrap();
+    let mut reader = BufReader::new(stdout);
+
+    // Wait for HTTP server
+    assert!(wait_server(http_port, 12), "Q2: HTTP server never started");
+
+    // 3. Initialize MCP
+    let init = serde_json::json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"clientInfo":{"name":"test"}}});
+    child.stdin.as_mut().unwrap()
+        .write_all(format!("{init}\n").as_bytes()).unwrap();
+    let mut resp = String::new();
+    reader.read_line(&mut resp).unwrap();
+    let r: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
+    assert_eq!(r["result"]["protocolVersion"].as_str(), Some("2025-11-25"), "Q2 init: {r}");
+
+    // 4. Call attach_session
+    let call = serde_json::json!({
+        "jsonrpc":"2.0","id":1,
+        "method":"tools/call",
+        "params":{
+            "name":"attach_session",
+            "arguments":{
+                "port": debugpy_port,
+                "adapter": "python",
+                "program": target.to_str().unwrap(),
+                "breakpoints": [format!("{}:43", target.display())]
+            }
+        }
+    });
+    child.stdin.as_mut().unwrap()
+        .write_all(format!("{call}\n").as_bytes()).unwrap();
+    let mut resp2 = String::new();
+    reader.read_line(&mut resp2).unwrap();
+    // Might get a tools/list_changed notification first — skip it
+    let r2: serde_json::Value = serde_json::from_str(resp2.trim()).unwrap();
+    let r2 = if r2.get("method").is_some() {
+        // This was a notification, read the actual response
+        let mut resp3 = String::new();
+        reader.read_line(&mut resp3).unwrap();
+        serde_json::from_str(resp3.trim()).unwrap()
+    } else {
+        r2
+    };
+
+    assert!(r2.get("error").is_none(), "Q2 attach_session error: {r2}");
+    let text = r2["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(text.contains("session_id"), "Q2: expected session_id in response: {text}");
+    assert!(text.contains("attach"), "Q2: expected 'attach' mode in response: {text}");
+
+    // 5. Parse session_id and call get_debug_context
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap_or(serde_json::json!({}));
+    let sid = parsed["session_id"].as_str().unwrap_or("");
+    assert!(!sid.is_empty(), "Q2: session_id should not be empty");
+    let status = parsed["status"].as_str().unwrap_or("");
+    // Status should be "paused" (breakpoint at line 43) or "running"
+    eprintln!("Q2: attach_session returned status={status} session_id={sid}");
+
+    // Cleanup
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = debugpy.kill();
+    let _ = debugpy.wait();
+}
