@@ -100,7 +100,8 @@ The debugger launches a web UI automatically (unless `--no-open-browser`). Featu
 ### Standard loop
 
 ```
-1. launch_session        – start a debug session (or get_sessions if one is already running)
+1. launch_session        – start a debug session (or attach_session for remote targets)
+   attach_session        – attach to a running process (debugpy, JDWP, Node inspector)
 2. get_debug_context     – orient: paused_at + locals + call_stack + source_window + breakpoints in ONE call
 3. evaluate / get_variables  – inspect specific values
 4. step_over / step_in   – advance (blocking: waits for pause, safe to chain)
@@ -125,6 +126,22 @@ Launch a new debug session autonomously — no human intervention needed. Spawns
 { "program": "/abs/path/script.py", "adapter": "python", "breakpoints": ["/abs/path/script.py:42"] }
 ```
 Returns `{ "session_id": "...", "status": "paused" | "running" }`. Use the returned `session_id` for all subsequent tool calls.
+
+#### `attach_session`
+Attach to a running debug target (JVM via JDWP, Python via debugpy, Node via inspector, or a remote DAP server). Spawns or connects a debug adapter, sets breakpoints, waits until paused.
+```json
+{ "port": 5005, "adapter": "java", "host": "127.0.0.1", "breakpoints": ["/abs/path/App.java:42"] }
+```
+Parameters:
+- `port` (required): Remote debug port (e.g. 5005 for JDWP, 5678 for debugpy, 9229 for Node inspector)
+- `adapter`: `"java"`, `"python"`, `"node"`, `"lldb"` — auto-detected from program extension if omitted
+- `host`: Remote host (default: `"127.0.0.1"`)
+- `program`: Path to source file (for breakpoints and source context)
+- `breakpoints`: Array of `"file:line"` strings
+- `attach_args`: Custom args merged into the DAP attach request (overrides defaults)
+- `session_id`: Optional custom session ID
+
+Returns `{ "session_id": "...", "status": "paused" | "running" }`.
 
 #### `stop_session`
 Stop and clean up a debug session. Sends disconnect, kills adapter, removes from registry.
@@ -522,7 +539,7 @@ Restore exported state into the current session.
 | WebAssembly | `--config wasm.dap.json`      | `wasmtime` + `lldb-dap` (LLVM ≥16)   | ✅ |
 | Any adapter | `--config dap.json`           | See `dap.json.example`                | ✅ |
 
-Remote attach is supported via `dap.json` with `host` + `port` fields (no local adapter needed).
+Remote attach is supported via `attach_session` MCP tool or `dap.json` with `host` + `port` fields.
 
 ---
 
