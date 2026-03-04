@@ -1,6 +1,6 @@
 {
   "name": "@algiras/debugium",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "AI-driven debugger for Python, JavaScript, TypeScript, Rust, Java, C/C++, Scala, and WebAssembly via DAP adapters and MCP tools.",
   "license": "MIT",
   "author": {
