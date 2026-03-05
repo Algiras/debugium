@@ -7,29 +7,43 @@ Debug Python, JavaScript, TypeScript, C, C++, Rust, Java, Scala, and WebAssembly
 [![CI](https://github.com/Algiras/debugium/actions/workflows/ci.yml/badge.svg)](https://github.com/Algiras/debugium/actions/workflows/ci.yml)
 [![Docs](https://img.shields.io/badge/docs-algiras.github.io%2Fdebugium-blue)](https://algiras.github.io/debugium)
 
-![Debugium UI — paused at a breakpoint in cache.py with variables panel showing key, self, and value](docs/screenshot.png)
+![Debugium UI — paused at a breakpoint in target_python.py with variables, call stack, breakpoints, watch, timeline, and console panels](docs/screenshot.png)
 
 ---
 
 ## Features
 
-- **Real-time web UI** — source viewer, breakpoints, variables (recursive expansion), call stack, console, timeline, watch expressions, findings
-- **Multi-language** — Python (debugpy), Node.js/TypeScript (js-debug), C/C++/Rust (lldb-dap), Java (java-debug), Scala (Metals), WebAssembly (lldb-dap), or any DAP adapter via `dap.json`
-- **MCP integration** — 50+ tools exposing the full debug session to Claude or any LLM
-- **Comprehensive DAP coverage** — 35 DAP requests implemented including breakpoints, stepping, goto, memory, disassembly, and more
-- **Capability-gated tools** — MCP tools automatically shown/hidden based on what the debug adapter supports
-- **Multi-session** — debug multiple programs simultaneously, with child session routing (js-debug)
-- **Execution timeline** — every stop recorded with changed variables and stack summary
-- **Watch expressions** — evaluated automatically at every breakpoint
-- **Annotations & findings** — LLM (or you) pin notes to source lines and record conclusions
-- **Breakpoints** — conditional, logpoints, hit-count, function, data (watchpoints), exception, run-to-cursor
-- **Keyboard shortcuts** — F5 continue, F10 step over, F11 step in, Shift+F11 step out
-- **Dark / light mode** toggle
-- **Variable search** filter with recursive expansion
+### Web UI
+- **Real-time web UI** — source viewer, breakpoints, variables (recursive expansion), call stack, console, timeline, watch expressions, findings — all updated live via WebSocket
+- **Multi-tab source viewer** — open multiple files, click stack frames to navigate
+- **Variable search** — filter variables by name with recursive expansion
+- **Changed-variable highlighting** — variables that changed since last stop shown in orange
 - **Thread selector** — switch between threads in multi-threaded programs
-- **Panel collapse** — resize or hide any panel (Slim / Standard / Full layouts)
-- **Auto-reconnect** — UI reconnects to the server after a dropped WebSocket
+- **Panel collapse & resize** — drag to resize, toggle to collapse; Slim / Standard / Full layout presets
+- **Dark / light mode** toggle
+- **Auto-reconnect** — UI reconnects after a dropped WebSocket, with visual status indicator
+- **Keyboard shortcuts** — F5 continue, F10 step over, F11 step in, Shift+F11 step out, Ctrl/Cmd+D dark mode
+- **Button animations** — in-flight spinner and completion flash for debug commands
+
+### Debugging
+- **Multi-language** — Python (debugpy), Node.js/TypeScript (js-debug), C/C++/Rust (lldb-dap), Java (java-debug), Scala (Metals), WebAssembly (lldb-dap), or any DAP adapter via `dap.json`
+- **Comprehensive DAP coverage** — 35+ DAP requests: breakpoints, stepping, goto, memory read/write, disassembly, and more
+- **Breakpoints** — conditional, logpoints, hit-count, function, data (watchpoints), exception, run-to-cursor (`continue_until`)
+- **Multi-session** — debug multiple programs simultaneously, with child session routing (js-debug)
+- **Remote debugging** — attach to debugpy, JDWP, or Node inspector running on another machine or container
+
+### LLM / MCP Integration
+- **64 MCP tools** — the full debug session exposed to Claude or any LLM
+- **Capability-gated tools** — tools automatically shown/hidden based on adapter capabilities
+- **Compound tools** — `get_debug_context` (orient in one call), `step_until`, `step_until_change`, `run_until_exception`, `explain_exception`, `get_call_tree`, `compare_snapshots`, `find_first_change`
+- **Execution timeline** — every stop recorded with changed variables and stack summary
+- **Watch expressions** — evaluated automatically at every breakpoint, manageable by LLM or UI
+- **Annotations & findings** — pin notes to source lines, record conclusions visible in the UI
 - **Session export/import** — save and restore debugging knowledge across sessions
+
+### CLI Control
+- **Full CLI** — 13 subcommands to drive sessions from a second terminal without the web UI
+- **Auto-discovery** — port file at `~/.debugium/port`, session logs in `~/.debugium/sessions/`
 
 ---
 
@@ -104,6 +118,21 @@ debugium launch MainClass --adapter java
 debugium launch build-target --adapter metals
 debugium launch build-target --adapter metals:5005  # custom port
 ```
+
+### Attach to a running process (remote debugging)
+
+```bash
+# Python (debugpy listening on port 5678)
+debugium attach --port 5678 --adapter python
+
+# Java (JDWP on port 5005)
+debugium attach --port 5005 --adapter java
+
+# Node.js (inspector on port 9229)
+debugium attach --port 9229 --adapter node
+```
+
+Or via MCP: `attach_session(port=5678, adapter="python", breakpoints=["/path/app.py:42"])`
 
 ### Use a custom adapter via dap.json
 
@@ -229,12 +258,12 @@ debugium bp clear
 
 ## MCP Tools
 
-When connected via MCP, 50+ tools are available. Key ones:
+When connected via MCP, 64 tools are available. Key ones:
 
 | Category | Tools |
 |----------|-------|
 | **Orient** | `get_debug_context` ★ (paused location + locals + stack + source in one call) |
-| **Breakpoints** | `set_breakpoint`, `set_breakpoints`, `set_logpoint`, `list_breakpoints`, `clear_breakpoints`, `set_function_breakpoints`, `set_exception_breakpoints`, `set_data_breakpoint`, `breakpoint_locations` |
+| **Breakpoints** | `set_breakpoint`, `set_breakpoints`, `set_logpoint`, `list_breakpoints`, `clear_breakpoints`, `set_function_breakpoints`, `set_exception_breakpoints`, `set_data_breakpoint`, `list_data_breakpoints`, `clear_data_breakpoints`, `breakpoint_locations` |
 | **Execution** | `continue_execution`, `step_over`, `step_in`, `step_out`, `pause`, `goto`, `disconnect`, `terminate`, `restart` |
 | **Inspection** | `get_stack_trace`, `get_scopes`, `get_variables`, `evaluate`, `get_threads`, `get_source`, `get_capabilities`, `loaded_sources`, `source_by_reference`, `step_in_targets` |
 | **Mutation** | `set_variable`, `set_expression` |
@@ -244,7 +273,7 @@ When connected via MCP, 50+ tools are available. Key ones:
 | **Annotations** | `annotate`, `get_annotations`, `add_finding`, `get_findings` |
 | **Watches** | `add_watch`, `remove_watch`, `get_watches` |
 | **Compound** | `step_until`, `step_until_change`, `continue_until`, `run_until_exception`, `explain_exception`, `get_call_tree`, `restart_frame` |
-| **Session** | `get_sessions`, `list_sessions`, `launch_session`, `stop_session`, `export_session`, `import_session` |
+| **Session** | `get_sessions`, `list_sessions`, `launch_session`, `attach_session`, `stop_session`, `export_session`, `import_session` |
 | **Control** | `goto_targets`, `cancel_request` |
 
 > **Note**: `step_over`, `step_in`, and `step_out` are **blocking** — they wait for the
@@ -271,16 +300,18 @@ See [SKILL.md](SKILL.md) for the full reference with input schemas.
 ## Architecture
 
 ```
-debugium-server (Axum)
-├── DAP proxy — spawns / connects to debug adapters (debugpy, js-debug, lldb-dap, java-debug, Metals, custom)
-├── HTTP API  — /state, /dap, /sessions, /annotations, /findings
-├── WebSocket — broadcasts DAP events to the UI in real-time
-└── MCP stdio — JSON-RPC 2.0 server for LLM tool integration
+debugium-server (Rust + Axum)
+├── DAP proxy     — spawns / attaches to debug adapters (debugpy, js-debug, lldb-dap, java-debug, Metals, custom)
+├── HTTP API      — /state, /sessions, /annotations, /findings, /watches, /timeline
+├── WebSocket     — broadcasts DAP events + enriched stop data (changed vars, timeline) to UI
+├── MCP stdio     — JSON-RPC 2.0 server exposing 64 tools for LLM integration
+├── CLI control   — 13 subcommands to drive sessions from a second terminal
+└── ~/.debugium/  — port file, session logs (events.ndjson), debug log
 
 debugium-ui (Leptos + WASM)
-├── CodeMirror 6 — source viewer with breakpoint gutters + exec arrow + LLM annotations
-├── Reactive panels — Variables, Stack, Breakpoints, Findings, Watch, Timeline, Console
-└── WebSocket client — receives events, sends DAP commands, auto-reconnects
+├── CodeMirror 6  — source viewer with breakpoint gutters, exec arrow, LLM annotations, multi-tab
+├── Reactive panels — Variables, Stack, Breakpoints, Findings, Watch, Timeline, Console (18 components)
+└── WebSocket     — receives events, sends DAP commands, auto-reconnects with status indicator
 ```
 
 ---

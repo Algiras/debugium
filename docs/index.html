@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Debugium — Multi-language debugger with LLM integration</title>
-  <meta name="description" content="Debug Python, JavaScript, TypeScript, and Rust from your browser. 40+ MCP tools for AI-driven analysis via Claude." />
+  <meta name="description" content="Debug Python, JavaScript, TypeScript, C, C++, Rust, Java, and Scala from your browser. 64 MCP tools for AI-driven analysis via Claude." />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -127,11 +127,12 @@
 <body>
 
 <nav>
-  <div class="nav-logo">Debugium <span class="badge">v0.1</span></div>
+  <div class="nav-logo">Debugium <span class="badge">v0.1.3</span></div>
   <div class="nav-links">
     <a href="#install">Install</a>
     <a href="#features">Features</a>
     <a href="#mcp">MCP Tools</a>
+    <a href="#cli">CLI</a>
     <a href="#workflow">Workflow</a>
     <a href="https://github.com/Algiras/debugium">GitHub</a>
   </div>
@@ -140,7 +141,7 @@
 <!-- ── Hero ── -->
 <section class="hero">
   <h1>Debug any language.<br/><span>Powered by AI.</span></h1>
-  <p>Real-time browser UI for Python, JavaScript, TypeScript, and Rust debuggers — with 40+ MCP tools so Claude can step through your code, inspect live values, and annotate the UI.</p>
+  <p>Real-time browser UI for Python, JavaScript, TypeScript, C, C++, Rust, Java, and Scala debuggers — with 64 MCP tools so Claude can step through your code, inspect live values, and annotate the UI.</p>
   <div class="hero-btns">
     <a class="btn btn-primary" href="#install">↓ Install</a>
     <a class="btn btn-secondary" href="https://github.com/Algiras/debugium">★ GitHub</a>
@@ -148,7 +149,7 @@
 </section>
 
 <div class="screenshot-wrap">
-  <img src="screenshot.png" alt="Debugium UI — paused at a breakpoint, variables panel, findings panel, and execution timeline visible" />
+  <img src="screenshot.png" alt="Debugium UI — paused at a breakpoint in target_python.py with variables, call stack, breakpoints, watch, timeline, and console panels" />
 </div>
 
 <!-- ── Install ── -->
@@ -180,7 +181,7 @@ debugium launch my_script.py --adapter python --breakpoint /abs/path/my_script.p
   }
 }
 
-<span class="c"># Then launch a session — Claude gains access to all 40+ tools</span>
+<span class="c"># Then launch a session — Claude gains access to all 64 tools</span>
 debugium launch my_script.py --adapter python --breakpoint /abs/path/my_script.py:42</div>
   </div>
 
@@ -210,7 +211,7 @@ cargo install --path crates/debugium-server</div>
     </div>
     <div class="feature-card">
       <div class="icon">🤖</div>
-      <h3>40+ MCP tools</h3>
+      <h3>64 MCP tools</h3>
       <p>Expose your full debug session to Claude. The LLM can step code, inspect live values, evaluate expressions, and annotate the UI — all visible in real-time.</p>
       <span class="tag">get_debug_context</span>
     </div>
@@ -264,6 +265,23 @@ cargo install --path crates/debugium-server</div>
       <h3>Multi-thread &amp; subprocess</h3>
       <p>Inspect all threads by ID, switch frames, and auto-attach to child processes spawned during a debug session.</p>
     </div>
+    <div class="feature-card">
+      <div class="icon">🖥️</div>
+      <h3>CLI control</h3>
+      <p>13 subcommands to drive sessions from a second terminal — inspect state, step, evaluate, set breakpoints, annotate — all without the web UI.</p>
+      <span class="tag">debugium vars</span> <span class="tag">debugium eval</span>
+    </div>
+    <div class="feature-card">
+      <div class="icon">🔌</div>
+      <h3>Remote debugging</h3>
+      <p>Attach to debugpy, JDWP, or Node inspector running on another machine or in a container. Supports path mappings for local/remote source.</p>
+      <span class="tag">attach_session</span>
+    </div>
+    <div class="feature-card">
+      <div class="icon">💾</div>
+      <h3>Session persistence</h3>
+      <p>Session metadata, DAP events (NDJSON), and debug logs saved to <code>~/.debugium/</code>. Export/import session state across invocations.</p>
+    </div>
   </div>
 </section>
 
@@ -275,6 +293,10 @@ cargo install --path crates/debugium-server</div>
     <div class="lang-pill">⬡ JavaScript <span style="color:var(--muted);font-size:.8rem">via js-debug</span></div>
     <div class="lang-pill">📘 TypeScript <span style="color:var(--muted);font-size:.8rem">via js-debug</span></div>
     <div class="lang-pill">🦀 Rust <span style="color:var(--muted);font-size:.8rem">via lldb-dap</span></div>
+    <div class="lang-pill">⚙️ C / C++ <span style="color:var(--muted);font-size:.8rem">via lldb-dap</span></div>
+    <div class="lang-pill">☕ Java <span style="color:var(--muted);font-size:.8rem">via java-debug</span></div>
+    <div class="lang-pill">🔷 Scala <span style="color:var(--muted);font-size:.8rem">via Metals</span></div>
+    <div class="lang-pill">🧩 Any DAP <span style="color:var(--muted);font-size:.8rem">via dap.json</span></div>
   </div>
 </section>
 
@@ -282,7 +304,7 @@ cargo install --path crates/debugium-server</div>
 <section class="section" id="mcp">
   <div class="mcp-box">
     <h2>MCP Tools for AI Debugging</h2>
-    <p>Add Debugium to your project's <code>.mcp.json</code> and Claude gains access to 40+ tools covering every aspect of a debug session.</p>
+    <p>Add Debugium to your project's <code>.mcp.json</code> and Claude gains access to 64 tools covering every aspect of a debug session. Tools are capability-gated — only shown when the adapter supports them.</p>
 
     <div class="tool-groups">
       <div>
@@ -291,6 +313,7 @@ cargo install --path crates/debugium-server</div>
           <div class="tool-list">
             <div class="tool-row"><span class="tool-name">get_debug_context</span><span class="star">★</span><span class="tool-desc">Paused location + locals + stack + source window in one call</span></div>
             <div class="tool-row"><span class="tool-name">get_sessions</span><span class="tool-desc">List active sessions</span></div>
+            <div class="tool-row"><span class="tool-name">get_capabilities</span><span class="tool-desc">Adapter feature flags</span></div>
           </div>
         </div>
         <br/>
@@ -312,7 +335,10 @@ cargo install --path crates/debugium-server</div>
             <div class="tool-row"><span class="tool-name">set_breakpoints</span><span class="tool-desc">Multiple lines in one file</span></div>
             <div class="tool-row"><span class="tool-name">set_function_breakpoints</span><span class="tool-desc">Break on function name</span></div>
             <div class="tool-row"><span class="tool-name">set_exception_breakpoints</span><span class="tool-desc">Break on raised/uncaught exceptions</span></div>
-            <div class="tool-row"><span class="tool-name">list_breakpoints / clear_breakpoints</span><span class="tool-desc"></span></div>
+            <div class="tool-row"><span class="tool-name">set_logpoint</span><span class="tool-desc">Log message without pausing</span></div>
+            <div class="tool-row"><span class="tool-name">set_data_breakpoint</span><span class="tool-desc">Break on variable/memory change</span></div>
+            <div class="tool-row"><span class="tool-name">continue_until</span><span class="tool-desc">Temp breakpoint + continue</span></div>
+            <div class="tool-row"><span class="tool-name">list / clear breakpoints</span><span class="tool-desc">Manage all breakpoint types</span></div>
           </div>
         </div>
       </div>
@@ -327,6 +353,8 @@ cargo install --path crates/debugium-server</div>
             <div class="tool-row"><span class="tool-name">evaluate</span><span class="tool-desc">Evaluate any expression in a frame</span></div>
             <div class="tool-row"><span class="tool-name">get_threads</span><span class="tool-desc">List threads</span></div>
             <div class="tool-row"><span class="tool-name">get_source</span><span class="tool-desc">Source file with optional line zoom</span></div>
+            <div class="tool-row"><span class="tool-name">set_variable</span><span class="tool-desc">Change a variable's value at runtime</span></div>
+            <div class="tool-row"><span class="tool-name">loaded_sources</span><span class="tool-desc">List all loaded source files</span></div>
           </div>
         </div>
         <br/>
@@ -355,7 +383,24 @@ cargo install --path crates/debugium-server</div>
           <h3>Compound</h3>
           <div class="tool-list">
             <div class="tool-row"><span class="tool-name">step_until</span><span class="tool-desc">Step until condition is true</span></div>
+            <div class="tool-row"><span class="tool-name">step_until_change</span><span class="tool-desc">Step until variable changes</span></div>
             <div class="tool-row"><span class="tool-name">run_until_exception</span><span class="tool-desc">Continue until exception raised</span></div>
+            <div class="tool-row"><span class="tool-name">explain_exception</span><span class="tool-desc">Exception info + stack + locals</span></div>
+            <div class="tool-row"><span class="tool-name">get_call_tree</span><span class="tool-desc">Stack + locals for each frame</span></div>
+            <div class="tool-row"><span class="tool-name">compare_snapshots</span><span class="tool-desc">Diff state between two stops</span></div>
+            <div class="tool-row"><span class="tool-name">find_first_change</span><span class="tool-desc">First stop where variable changed</span></div>
+          </div>
+        </div>
+        <br/>
+        <div class="tool-group">
+          <h3>Session &amp; Memory</h3>
+          <div class="tool-list">
+            <div class="tool-row"><span class="tool-name">launch_session</span><span class="tool-desc">Start new session from MCP</span></div>
+            <div class="tool-row"><span class="tool-name">attach_session</span><span class="tool-desc">Attach to running process</span></div>
+            <div class="tool-row"><span class="tool-name">export / import_session</span><span class="tool-desc">Save &amp; restore session state</span></div>
+            <div class="tool-row"><span class="tool-name">read_memory / write_memory</span><span class="tool-desc">Raw memory access (native)</span></div>
+            <div class="tool-row"><span class="tool-name">disassemble</span><span class="tool-desc">Assembly listing (native)</span></div>
+            <div class="tool-row"><span class="tool-name">goto</span><span class="tool-desc">Jump execution to target line</span></div>
           </div>
         </div>
       </div>
@@ -363,7 +408,8 @@ cargo install --path crates/debugium-server</div>
 
     <div class="tool-note">
       <strong>Blocking steps:</strong> <code>step_over</code>, <code>step_in</code>, and <code>step_out</code> wait for the adapter to pause before returning — safe to chain back-to-back without sleeps.<br/>
-      <strong>Stale output:</strong> <code>continue_execution</code> returns <code>console_line_count</code>. Pass it as <code>from_line</code> to <code>wait_for_output</code> to only match output printed after the resume.
+      <strong>Stale output:</strong> <code>continue_execution</code> returns <code>console_line_count</code>. Pass it as <code>from_line</code> to <code>wait_for_output</code> to only match output printed after the resume.<br/>
+      <strong>Capability-gated:</strong> Tools like <code>read_memory</code>, <code>goto</code>, <code>restart_frame</code>, and <code>disassemble</code> only appear when the debug adapter supports them.
     </div>
   </div>
 </section>
@@ -424,6 +470,27 @@ cargo install --path crates/debugium-server</div>
   </div>
 </section>
 
+<!-- ── CLI ── -->
+<section class="section-narrow" id="cli">
+  <h2>CLI Control</h2>
+  <p style="color:var(--muted);text-align:center;margin-bottom:1.5rem">Drive sessions from a second terminal — or let an LLM agent use them. Port is auto-discovered from <code>~/.debugium/port</code>.</p>
+  <div class="code-block"><span class="c"># Inspect</span>
+debugium sessions                  <span class="c"># list active sessions</span>
+debugium stack                     <span class="c"># call stack</span>
+debugium vars                      <span class="c"># local variables</span>
+debugium eval <span class="s">"len(fibs)"</span>          <span class="c"># evaluate expression</span>
+debugium context --compact         <span class="c"># full snapshot (3 frames, 10 vars)</span>
+
+<span class="c"># Control</span>
+debugium step over                 <span class="c"># step over (next line)</span>
+debugium continue                  <span class="c"># resume execution</span>
+debugium bp set file.py:42         <span class="c"># set breakpoint</span>
+
+<span class="c"># Annotate (visible in web UI)</span>
+debugium annotate file.py:42 <span class="s">"bug here"</span> --color error
+debugium finding <span class="s">"fibs has 10 elements"</span></div>
+</section>
+
 <!-- ── Setup ── -->
 <section class="section-narrow">
   <h2>Quick setup</h2>
@@ -440,17 +507,21 @@ cargo install --path crates/debugium-server</div>
 }</div>
     </div>
     <div class="setup-card">
-      <h3>2. Launch a session</h3>
+      <h3>2. Launch or attach</h3>
       <div class="code-block"><span class="c"># Python</span>
 debugium launch app.py \
   --adapter python \
   --breakpoint /abs/path/app.py:42
 
-<span class="c"># Rust</span>
-cargo build
-debugium launch ./target/debug/app \
-  --adapter lldb \
-  --breakpoint /abs/path/src/main.rs:60</div>
+<span class="c"># C / C++ / Rust</span>
+cc -g -O0 main.c -o main
+debugium launch ./main --adapter lldb
+
+<span class="c"># Node.js / TypeScript</span>
+debugium launch app.ts --adapter typescript
+
+<span class="c"># Attach to remote process</span>
+debugium attach --port 5678 --adapter python</div>
     </div>
   </div>
 </section>
