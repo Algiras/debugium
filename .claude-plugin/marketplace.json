@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "debugium",
-      "source": ".",
+      "source": "./",
       "description": "AI-driven debugger for Python, JavaScript, TypeScript, Rust, Java, C/C++, Scala, and WebAssembly. Control live debug sessions via MCP tools: launch or attach to processes, set breakpoints, inspect variables, step through execution, and trace bugs using DAP adapters.",
       "version": "0.1.3",
       "author": { "name": "Algiras" },
